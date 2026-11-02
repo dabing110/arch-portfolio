@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>车联网云平台架构设计与落地方案 · dabing110 架构作品集</title>
+<meta name="description" content="车联网云平台架构设计与落地方案">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="brand">dabing110<span>平台架构 · 物联网 / 车联网</span></div>
+    <nav class="nav">
+      <a href="index.html">作品集</a>
+      <a href="vehicle.html" class="on">车联网架构</a>
+      <a href="methodology.html">架构方法论</a>
+      <a href="https://github.com/dabing110" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="side">
+    <div class="side-t">本文目录</div>
+    <ul><li><a href="#h1">§0 假设与口径（先看这节，否则后面的数字没意义）</a></li><li><a href="#h2">§1 结论先行（五条判断）</a></li><li><a href="#h3">§2 容量模型：先算数据量，再画架构</a></li><li><a href="#h8">§3 总体架构（六层）</a></li><li><a href="#h9">§4 接入网关：双栈是结论，不是妥协</a></li><li><a href="#h13">§5 数据链路：三个选型的权衡与决策</a></li><li><a href="#h17">§6 协议与数据规范：双国标适配</a></li><li><a href="#h21">§7 弱网补传：本平台的生死线</a></li><li><a href="#h26">§8 安全与合规：2026 年的准入项，不是加分项</a></li><li><a href="#h30">§9 远程控车与 OTA：车规级与一般 IoT 的本质差异</a></li><li><a href="#h33">§10 落地路线（walking skeleton，3~5 人，约 24 周）</a></li><li><a href="#h34">§11 ADR（关键决策记录）</a></li><li><a href="#h40">§12 TCO（示例口径，非报价）</a></li><li><a href="#h41">§13 不做清单</a></li><li><a href="#h42">§14 待查证清单（不编、不猜）</a></li></ul>
+    <div class="side-foot">
+      作者：dabing110<br>
+      <a href="index.html">← 返回作品集</a>
+    </div>
+  </aside>
+
+  <main class="doc">
+    <div class="doc-meta"><b>车联网云平台架构设计与落地方案</b> · 作者 dabing110　|　15 个章节 · 16 张数据表 · 7 张架构图</div>
+    <blockquote>
+<p>定位：一份可落地的工程方案，不是概念介绍。
+方法论主干来自既往多份平台方案的共同沉淀——端到端不丢语义、弱网 store-and-forward、时序选型、ADR、SLO/错误预算、walking skeleton、FMEA、TCO 三档、待查证"不编不猜"。本文只写<strong>车联网的差异化与关键决策</strong>，通用机制不重复展开。
+阅读顺序建议：<strong>§1 结论 → §2 容量 → §4 接入网关 → §7 弱网补传 → §8 安全合规 → §10 落地路线</strong>，其余按需查阅。</p>
+</blockquote>
+<hr />
+<h2 id="h1">§0 假设与口径（先看这节，否则后面的数字没意义）</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>项</th>
+<th>取值</th>
+<th>依据 / 说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>目标在线规模</td>
+<td><strong>50 万辆 T-BOX</strong>（"数十万级"取上限）</td>
+<td>按行业常见"数十万级"规模取上限，结构对 10 万 / 100 万同样成立</td>
+</tr>
+<tr>
+<td>峰值并发连接</td>
+<td>= 在线数 50 万</td>
+<td>长连接在线即峰值连接，移动设备无"同时率"折扣</td>
+</tr>
+<tr>
+<td>车型结构</td>
+<td>商用车（JT/T 808 强制）+ 新能源乘用车（GB/T 32960 强制上报）混合</td>
+<td>决定双协议栈</td>
+</tr>
+<tr>
+<td>数据频率</td>
+<td>定位 10 s/帧，车况/CAN 30 s/帧</td>
+<td>GB/T 32960.3-2025 实时数据上报区间</td>
+</tr>
+<tr>
+<td>网络假设</td>
+<td><strong>弱网/断连是常态不是异常</strong>：隧道、地库、偏远路段、跨基站切换</td>
+<td>任意车辆每天经历 0~N 次断连；这条决定 §7 是生死线</td>
+</tr>
+<tr>
+<td>部署形态</td>
+<td>私有化 / 专有云，业务数据不出域，排除公有云弹性扩缩</td>
+<td>成本是<strong>阶梯式固定成本</strong>，不是变动成本</td>
+</tr>
+<tr>
+<td>合规基线</td>
+<td>等保三级 + GB 44495/44496（2026 强制）+ 汽车数据规定 + 出境指引（2026 版）</td>
+<td>§8 展开</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>一句话口径</strong>：这是一个"<strong>50 万移动设备、弱网常态、双国标强制上报、车规级安全</strong>"的遥测与控制平台，不是"多接了几个传感器的普通 IoT"。</p>
+<hr />
+<h2 id="h2">§1 结论先行（五条判断）</h2>
+<ol>
+<li><strong>接入网关必须双栈，不为"统一"硬塞一个组件。</strong> JT/T 808 是私有二进制 TCP 协议，EMQX 不支持、也不该让它支持；MQTT 遥测通道用 EMQX 成熟件。自研与成熟件各守一段，中间用协议适配层解耦。</li>
+<li><strong>弱网补传是生死线，不是附加功能。</strong> 移动性断连是常态，断点续传 + 优先级调度 + 防补传风暴决定数据完整性 SLO 能否达成——做不好，数据是"看着在线、实际全是洞"。</li>
+<li><strong>时序库选型的决定性因素是设备基数。</strong> 50 万车 × 数百信号，InfluxDB 的 tag 高基数会 OOM；TDengine"一个设备一张表"模型天然匹配。这是<strong>结构差异</strong>，性能调优弥补不了。</li>
+<li><strong>远程控车按安全分级，L3（行驶相关）在架构上不留通路。</strong> 车辆下行控制与一般 IoT 下发指令的安全等级完全不同；车门解锁和制动相关指令之间，隔着的是人身安全和 GB 44496 的强制约束。</li>
+<li><strong>合规是 2026 年的准入项，不是加分项。</strong> GB 44495/44496 已强制（新申报车型 2026-07-01）、GB/T 32960 已升 2025 版、出境指引已出 2026 版。<strong>合规能力必须 P0 进架构，事后补的成本是重构级的。</strong></li>
+</ol>
+<hr />
+<h2 id="h3">§2 容量模型：先算数据量，再画架构</h2>
+<p>这是最容易被跳过去、也最容易返工的一步。先把账算清。</p>
+<h3 id="h4">2.1 稳态吞吐</h3>
+<pre><code>在线车辆        = 500,000
+上报频率        = 定位 10s/帧 + 车况 30s/帧
+                ≈ 每车 0.133 帧/s
+稳态帧率        = 500,000 × 0.133 ≈ 66,500 帧/s
+单帧大小        ≈ 200 B（JT/T 808 定位帧约 40B，GB/T 32960 实时帧含 CAN 打包约数百 B，取均值）
+稳态入口带宽    = 66,500 × 200 B ≈ 13 MB/s ≈ 106 Mbps
+</code></pre>
+<h3 id="h5">2.2 峰值：补传风暴（不是按在线数算，是按"回连集中"算）</h3>
+<p>移动设备断连后<strong>集中回连</strong>是常态——车队同时驶出隧道、早晚高峰、基站恢复。估算：</p>
+<pre><code>假设 10% 车辆（5 万辆）在 10 分钟内集中回连补传
+每车积压数据（断连 30 分钟，0.133 帧/s × 1800s）≈ 240 帧
+补传帧率        = 50,000 × 240 / 600s ≈ 20,000 帧/s（补传部分）
+叠加稳态        ≈ 66,500 + 20,000 ≈ 86,500 帧/s
+若回连更集中（3 分钟）或积压更深，峰值可达稳态 3~5 倍 → 取设计峰值 30 万帧/s
+</code></pre>
+<p><strong>结论：平台按稳态 6.7 万帧/s、峰值 30 万帧/s 设计。峰值不是来自"更多车"，是来自"补传集中"——这条决定网关必须做准入与整形，见 §7.4。</strong></p>
+<h3 id="h6">2.3 存储账</h3>
+<pre><code>每车每天帧数   = 86,400s × 0.133 ≈ 11,500 帧
+每车每天原始   = 11,500 × 200 B ≈ 2.3 MB
+50 万车每天原始 = 500,000 × 2.3 MB ≈ 1.15 TB/天
+TDengine 列存压缩（时序数据典型 10:1 ~ 20:1）→ 60 ~ 115 GB/天
+热数据保留 90 天 ≈ 5.4 ~ 10.4 TB
+</code></pre>
+<h3 id="h7">2.4 组件规模（按容量反推）</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>组件</th>
+<th>规模推导</th>
+<th>结果（示例，P0 压测校准）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Netty 接入网关</td>
+<td>单节点稳定 5~8 万长连接（内存 + GC + 解析 CPU 受限，非端口数）</td>
+<td>50 万 ÷ 6.5 万 ≈ <strong>8 节点</strong> + N+1 冗余</td>
+</tr>
+<tr>
+<td>EMQX 集群</td>
+<td>单节点 10 万+ MQTT 连接</td>
+<td><strong>3~5 节点</strong>集群</td>
+</tr>
+<tr>
+<td>Kafka</td>
+<td>单 broker 数万~十万 msg/s</td>
+<td>峰值 30 万 msg/s → <strong>5 broker</strong></td>
+</tr>
+<tr>
+<td>Flink</td>
+<td>按算子并行度，约 2× 峰值帧率处理</td>
+<td><strong>8~16 task slot</strong> 起步</td>
+</tr>
+<tr>
+<td>TDengine</td>
+<td>50 万表（一车一表）+ 写入 30 万行/s 峰值</td>
+<td><strong>5~8 数据节点</strong>集群</td>
+</tr>
+<tr>
+<td>Redis Cluster</td>
+<td>50 万连接态 + 设备影子 + 会话</td>
+<td><strong>6 节点</strong>（3 主 3 从）</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>与 AIoT v3 §2.3 同一纪律：<strong>这组数字是推导估算，P0 必须用真实轨迹压测校准</strong>。单节点连接数、压缩比、算子并行度三个数最敏感，任何一个偏 2 倍，集群规模就差 2 倍。</p>
+</blockquote>
+<figure id="fig5"><img src="assets/fig5.png" alt="容量模型" loading="lazy"><figcaption><b>图 5 · 容量模型</b>　稳态 6.7 万帧/s，峰值 30 万帧/s。峰值不是来自「车多」，而是来自<b>断连车辆集中回连</b>——这决定了网关必须做准入整形，而不是简单加机器。</figcaption></figure>
+
+<hr />
+<h2 id="h8">§3 总体架构（六层）</h2>
+<pre><code>┌─────────────────────────────────────────────────────────┐
+│ API 层      开放 API / 业务系统对接 / 国家监管平台上报对接 │
+├─────────────────────────────────────────────────────────┤
+│ 业务逻辑层  车辆档案 / 远程诊断 / 远程控制 / OTA / 告警中心 │
+│            / 驾驶行为 / 车队管理 / 设备影子                │
+├─────────────────────────────────────────────────────────┤
+│ 数据处理层  Flink 实时流（清洗/告警/聚合/地理围栏）        │
+│            Spark 离线（轨迹回放/报表/特征）                │
+├─────────────────────────────────────────────────────────┤
+│ 存储层      TDengine(时序) Redis(影子/会话/热)             │
+│            MySQL(业务) OSS/HDFS(原始帧归档) ES(检索)       │
+├─────────────────────────────────────────────────────────┤
+│ 数据处理层  Kafka(消息总线)  协议适配层(二进制↔统一帧)      │
+├─────────────────────────────────────────────────────────┤
+│ 接入层      Netty 网关(JT/T 808)  EMQX 集群(MQTT 遥测)    │
+│            LVS/SLB 负载均衡  连接管理/粘包拆包/准入整形     │
+├─────────────────────────────────────────────────────────┤
+│ 通信层      4G/5G/NB-IoT  APN 专网  TLS/SM4 加密通道      │
+└─────────────────────────────────────────────────────────┘
+        ↑                                    ↑
+   T-BOX（车端）                        边缘能力
+   本地缓存/断点续传/                    GB/T 32960 终端侧
+   优先级队列/签名验签                    存储与补传（国标要求）
+</code></pre>
+<p><strong>三条横切关注点</strong>（不进某一层，贯穿全部）：</p>
+<ol>
+<li><strong>端到端不丢语义</strong>：at-least-once + 幂等去重，双键 <code>(vin, msgId)</code> 去重 + <code>(vin, seq)</code> 有序性检测（继承 AIoT v3，见 §7.3）。</li>
+<li><strong>设备影子</strong>：云端维护每车最新状态，业务层读影子不等实时上报（继承 AIoT v3）。</li>
+<li><strong>可观测</strong>：连接数 / 帧率 / 解析失败率 / 补传积压 / 端到端延迟，全部进指标（§11 SLO）。</li>
+</ol>
+<figure id="fig1"><img src="assets/fig1.png" alt="六层组件架构图" loading="lazy"><figcaption><b>图 1 · 六层组件架构与三条横切</b>　接入层 / 协议适配层 / 数据链路层 / 存储层 / 业务层 / 应用层，横切三条：端到端不丢、设备影子、可观测。</figcaption></figure>
+
+<hr />
+<h2 id="h9">§4 接入网关：双栈是结论，不是妥协</h2>
+<p>行业里常见的说法是"用 Netty/EMQX 做接入"。这里的关键决策是：<strong>Netty 和 EMQX 不是二选一，是各司其职</strong>。</p>
+<h3 id="h10">4.1 为什么不能统一成一个</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>通道</th>
+<th>协议性质</th>
+<th>候选</th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>JT/T 808 控制/定位通道</td>
+<td>私有二进制 TCP，粘包拆包、转义（0x7e）、自定义帧头</td>
+<td>EMQX</td>
+<td><strong>不支持，也不该让它支持</strong>——硬塞协议插件等于把 MQTT broker 改成四不像</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td>Netty 自研</td>
+<td><strong>选定</strong>：协议解析完全可控，粘包/转义/校验位自己掌握</td>
+</tr>
+<tr>
+<td>MQTT 遥测通道</td>
+<td>标准 MQTT，QoS0/1/2，发布订阅</td>
+<td>Netty 自研 MQTT broker</td>
+<td><strong>重复造轮子</strong>——MQTT 的会话、遗嘱、保留消息、QoS 状态机工作量大且容易错</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td>EMQX</td>
+<td><strong>选定</strong>：成熟、水平扩展、50 万连接单集群可扛</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>判断</strong>：接入网关 = <strong>Netty 自研（JT/T 808）+ EMQX（MQTT 遥测）双栈</strong>，两者在<strong>协议适配层</strong>收敛为统一内部帧格式后进入 Kafka。<strong>统一发生在适配层，不是发生在接入层。</strong></p>
+<blockquote>
+<p><strong>这是给用户同构经验的位置</strong>：能源仪表遥测里 Modbus/DL-T645 走私有 TCP 网关、MQTT 走 broker，是同一种双栈结构。架构判断可直接复用。</p>
+</blockquote>
+<h3 id="h11">4.2 Netty 网关的工程要点（JT/T 808）</h3>
+<ul>
+<li><strong>粘包拆包</strong>：自定义 <code>DelimiterBasedFrameDecoder</code>（0x7e 定界）+ 转义还原（0x7d 0x02 → 0x7e）。</li>
+<li><strong>连接管理</strong>：<code>vin ↔ channel</code> 映射放 Redis Cluster（网关无状态化，任意节点可接任意车——这是水平扩展的前提）。</li>
+<li><strong>心跳与超时</strong>：终端心跳 + 网关空闲检测（<code>IdleStateHandler</code>），死连接及时回收，否则 50 万连接里一半是僵尸。</li>
+<li><strong>背压</strong>：解析线程池满 → 主动断流 + 回压，不让慢消费拖垮整个 EventLoop。</li>
+<li><strong>准入整形</strong>：令牌桶限每车帧率 + 全局补传整形（§7.4），防单车洪泛与补传风暴。</li>
+</ul>
+<h3 id="h12">4.3 设备影子与连接态</h3>
+<p>每车在 Redis 维护 <code>{连接态, 最后位置, 最后车况, 最后心跳时间, 当前固件版本}</code>。业务层<strong>默认读影子</strong>，只有诊断/控车等需要实时的场景才透传。否则 50 万车的状态查询会把接入层打穿。</p>
+<figure id="fig2"><img src="assets/fig2.png" alt="双栈接入与协议适配" loading="lazy"><figcaption><b>图 2 · 双栈接入</b>　JT/T 808 私有二进制走 Netty 自研网关，MQTT 遥测走 EMQX；<b>统一发生在协议适配层，不在接入层</b>——这是双栈能成立的前提。</figcaption></figure>
+
+<hr />
+<h2 id="h13">§5 数据链路：三个选型的权衡与决策</h2>
+<h3 id="h14">5.1 消息队列：Kafka vs RocketMQ</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Kafka</th>
+<th>RocketMQ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>吞吐</td>
+<td>高（百万级 msg/s 集群）</td>
+<td>高，但同规模略低</td>
+</tr>
+<tr>
+<td>时序数据管道适配</td>
+<td><strong>优</strong>（日志/遥测标准件）</td>
+<td>一般</td>
+</tr>
+<tr>
+<td>延迟消息/顺序消息</td>
+<td>弱（需自实现）</td>
+<td><strong>强</strong>（原生延迟/顺序）</td>
+</tr>
+<tr>
+<td>事务消息</td>
+<td>有</td>
+<td><strong>更成熟</strong></td>
+</tr>
+<tr>
+<td>生态（Flink connector）</td>
+<td><strong>一等公民</strong></td>
+<td>支持但非首选</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>决策：Kafka 作主数据总线</strong>（遥测/轨迹，高吞吐、与 Flink 生态最契合）；<strong>RocketMQ 作业务事件总线</strong>（控车指令、OTA 任务、告警——需要延迟消息与顺序消息）。</p>
+<blockquote>
+<p>不为"少一个组件"把业务事件也塞 Kafka——控车指令需要"驻车后才下发"的延迟与顺序保证，RocketMQ 原生支持，Kafka 要自研，得不偿失。</p>
+</blockquote>
+<h3 id="h15">5.2 时序库：TDengine vs InfluxDB（结构性差异，不是调优差异）</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>TDengine</th>
+<th>InfluxDB</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据模型</td>
+<td><strong>一个设备一张表</strong>（超级表统一管理）</td>
+<td>tag 索引（measurement + tag set）</td>
+</tr>
+<tr>
+<td>50 万设备基数</td>
+<td><strong>天然匹配</strong>（表数多但元数据轻）</td>
+<td><strong>tag 高基数 → 内存膨胀直至 OOM</strong></td>
+</tr>
+<tr>
+<td>写入吞吐（列存）</td>
+<td>高</td>
+<td>高（但高基数下降崖）</td>
+</tr>
+<tr>
+<td>车载场景适配</td>
+<td>内置降采样、滑动窗口、缓存</td>
+<td>需配 Continuous Query</td>
+</tr>
+<tr>
+<td>国产化/政企</td>
+<td><strong>国产，政企采购友好</strong></td>
+<td>国外，国产化替代清单常要求换</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>决策：TDengine。</strong> 决定性理由是<strong>设备基数</strong>——50 万 vin 作为 tag 值，InfluxDB 的倒排索引会先耗尽内存，这是结构问题；TDengine 把车当表、信号当列，基数变成表数（它的设计假设）。</p>
+<blockquote>
+<p>与 AIoT v3 时序选型同一结论、同一理由。这是"一设备一表 vs tag 高基数"的结构性差异，不是跑分能抹平的。</p>
+</blockquote>
+<h3 id="h16">5.3 流处理：Flink vs Spark Streaming</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Flink</th>
+<th>Spark Streaming</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型</td>
+<td>真流（逐条）</td>
+<td>微批</td>
+</tr>
+<tr>
+<td>延迟</td>
+<td><strong>毫秒~秒级</strong></td>
+<td>秒~十秒级</td>
+</tr>
+<tr>
+<td>实时告警/地理围栏</td>
+<td><strong>适配</strong></td>
+<td>延迟偏高</td>
+</tr>
+<tr>
+<td>Exactly-once 状态</td>
+<td><strong>原生</strong></td>
+<td>依赖 checkpoint</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>决策：Flink 做实时链路</strong>（清洗、告警、地理围栏、在线聚合——这些要秒级）；<strong>Spark 做离线链路</strong>（轨迹回放、批量报表、特征工程——吞吐优先、延迟不敏感）。<strong>两者不替代，按延迟要求分层。</strong></p>
+<figure id="fig3"><img src="assets/fig3.png" alt="数据链路与双键幂等" loading="lazy"><figcaption><b>图 3 · 数据链路</b>　双键幂等 <code>(vin,msgId)</code> / <code>(vin,seq)</code> 解决「多」与「少」，补传与实时分通道，存储按访问模式分工。</figcaption></figure>
+
+<hr />
+<h2 id="h17">§6 协议与数据规范：双国标适配</h2>
+<h3 id="h18">6.1 两套强制协议的分工</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>协议</th>
+<th>适用</th>
+<th>性质</th>
+<th>本平台的角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>JT/T 808-2019</strong>（+ JT/T 809 平台间）</td>
+<td>道路运输车辆（两客一危、货运、网约车）</td>
+<td>交通部行业标准，强制</td>
+<td>T-BOX ↔ 本平台（808）；本平台 ↔ 上级监管平台（809）</td>
+</tr>
+<tr>
+<td><strong>GB/T 32960-2025</strong>（全系列）</td>
+<td>新能源汽车</td>
+<td>国标，强制上报国家监管平台</td>
+<td>T-BOX → 企业平台（本）→ 地方/国家平台逐级上报</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>时效提醒</strong>：GB/T 32960 已整体升级 2025 版（.3 通信协议 2025-11-01 实施、.2 车载终端 2026-02-01 实施），<strong>2016 版已废止</strong>。协议字段与加密要求有变化，方案以 2025 版为基线。JT/T 808 现行 2019 版，但 2025-09 复审结论"修订"——<strong>两个标准都要跟踪修订动态</strong>，协议解析层必须可配置、可灰度升级。</p>
+</blockquote>
+<h3 id="h19">6.2 统一内部帧（协议适配层的产出）</h3>
+<p>双协议进入平台后，适配层统一为内部规范帧，下游业务只面向内部帧，不感知协议差异：</p>
+<pre><code>内部帧 = {
+  vin, msgId, seq,            // 双键：去重 + 有序
+  eventTs, ingestTs,          // 事件时间 vs 到达时间（补传时差异巨大）
+  frameType,                  // 定位/车况/告警/补传/控制回执
+  priority,                   // 补传优先级（§7.2）
+  payload{ 信号字典 },        // 字段定义见下
+  sourceProto,                // JTT808 / GBT32960 / MQTT
+  signature                   // 车端签名（控车回执/OTA 必验）
+}
+</code></pre>
+<h3 id="h20">6.3 字段定义（与嵌入式团队的接口契约）</h3>
+<p>与嵌入式团队配合，明确数据采集范围、字段定义、上报频率，落地为一张<strong>信号字典表</strong>，作为云端与嵌入式团队的唯一契约：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>单位</th>
+<th>频率</th>
+<th>必填</th>
+<th>来源</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>vin</td>
+<td>char(17)</td>
+<td>—</td>
+<td>每帧</td>
+<td>是</td>
+<td>T-BOX</td>
+<td>车辆唯一标识</td>
+</tr>
+<tr>
+<td>eventTs</td>
+<td>uint64</td>
+<td>ms</td>
+<td>每帧</td>
+<td>是</td>
+<td>车端时钟</td>
+<td><strong>必须车端打时间戳，云端到达时间不能替代</strong>（补传）</td>
+</tr>
+<tr>
+<td>经纬度/速度/方向</td>
+<td>按 808</td>
+<td>—</td>
+<td>10s</td>
+<td>是</td>
+<td>GNSS</td>
+<td>定位三要素</td>
+</tr>
+<tr>
+<td>SOC/电压/电流</td>
+<td>float</td>
+<td>%/V/A</td>
+<td>30s</td>
+<td>新能源必填</td>
+<td>BMS</td>
+<td>GB/T 32960 动力蓄电池包</td>
+</tr>
+<tr>
+<td>DTC 故障码</td>
+<td>list</td>
+<td>—</td>
+<td>事件触发</td>
+<td>否</td>
+<td>各 ECU</td>
+<td>远程诊断核心</td>
+</tr>
+<tr>
+<td>里程/挡位/转速</td>
+<td>—</td>
+<td>—</td>
+<td>30s</td>
+<td>否</td>
+<td>VCU</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>两条纪律</strong>：
+- <strong><code>eventTs</code> 必须由车端打戳</strong>。补传场景下数据到达时间晚于事件发生时间，用到达时间做时序入库会把轨迹时间轴打乱——这是弱网平台最容易犯的错。
+- <strong>信号字典版本化</strong>，云端与终端按版本协商，新增信号向后兼容（只增不改）。</p>
+<hr />
+<h2 id="h21">§7 弱网补传：本平台的生死线</h2>
+<p>弱网补传在架构上单列一节：这一节做不好，前面所有层都是在给"有洞的数据"做加速。</p>
+<h3 id="h22">7.1 为什么弱网是常态</h3>
+<p>固定 IoT 的断网是故障；<strong>车联网的断网是日常</strong>——隧道、地库、偏远路段、山区、跨基站切换、信号遮挡。设计假设必须是"任意车辆随时可能断连 N 分钟到数小时"，而不是"断网是小概率事件"。</p>
+<h3 id="h23">7.2 终端侧：store-and-forward（国标已要求，我们要把它做对）</h3>
+<p>GB/T 32960.2-2025 已要求车载终端具备<strong>盲区数据存储与补传能力</strong>。我们要做的是定义清楚终端侧的配合机制（终端需要配合的缓存、重连退避、优先级与去重）：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>机制</th>
+<th>设计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>本地缓存</td>
+<td>T-BOX Flash/SD 环形缓冲，按容量上限滚动；<strong>告警与国标强制帧标记为不可覆盖</strong></td>
+</tr>
+<tr>
+<td>优先级队列</td>
+<td>分五级：<strong>P0 安全告警 &gt; P1 国标强制上报 &gt; P2 实时定位 &gt; P3 历史轨迹 &gt; P4 日志</strong>；补传按优先级出队</td>
+</tr>
+<tr>
+<td>断点续传</td>
+<td>分块 + 偏移量 + 校验；每块带 <code>(vin, seq, offset, crc)</code>，断点续传从最后确认 offset 继续，<strong>不重传已确认块</strong></td>
+</tr>
+<tr>
+<td>补传标记</td>
+<td>补传帧 <code>frameType=补传</code> 且保留原始 <code>eventTs</code>（云端据此走补传通道，不污染实时告警）</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h24">7.3 端到端不丢语义（继承 AIoT v3，车联网适配）</h3>
+<p><strong>不存在真正的 exactly-once，落地是 at-least-once + 幂等去重</strong>：</p>
+<ul>
+<li><strong>去重键 <code>(vin, msgId)</code></strong>：同车同消息幂等，重复帧（重传/补传/网络重试）只入一次。</li>
+<li><strong>有序性检测键 <code>(vin, seq)</code></strong>：检测丢帧与乱序；发现 seq 缺口 → 触发定向补拉（不是等终端自己补）。</li>
+<li><strong>补传与实时分通道</strong>：补传数据进 Kafka 独立 topic，<strong>不进入实时告警流</strong>——否则 30 分钟前的告警会被当成"现在告警"触发误报。</li>
+</ul>
+<h3 id="h25">7.4 防补传风暴（§2.2 的峰值在这落地）</h3>
+<p>补传风暴的根因是"断连车辆集中回连 + 每车都背着积压数据"。三道闸：</p>
+<ol>
+<li><strong>网关令牌桶整形</strong>：每车补传帧率设上限，超限进慢速通道（继承 AIoT v3"令牌桶放网关"）。</li>
+<li><strong>回连退避与错峰</strong>：断连恢复后，终端按 <code>vin</code> 哈希随机退避 0~60s 再发起补传，避免万辆车同一秒压上来。</li>
+<li><strong>优先级调度</strong>：P0/P1 永远优先，P3/P4 在网关压力大时主动降级延后——<strong>宁可慢，不可乱、不可丢高优先级</strong>。</li>
+</ol>
+<p><strong>这一节的验收指标</strong>：断连 30 分钟恢复后，P0/P1 数据端到端延迟 ≤ 60s，完整率 100%（双键校验无缺口），P3/P4 可延迟但<strong>不允许丢</strong>。</p>
+<figure id="fig4"><img src="assets/fig4.png" alt="弱网补传时序" loading="lazy"><figcaption><b>图 4 · 弱网补传</b>　五级优先级调度 + 断点续传 + 防补传风暴三道闸；云端按「补传 / 实时」分流，避免历史告警被当成「现在告警」。</figcaption></figure>
+
+<hr />
+<h2 id="h26">§8 安全与合规：2026 年的准入项，不是加分项</h2>
+<h3 id="h27">8.1 合规清单（2026-11 时点核实）</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>标准/法规</th>
+<th>内容</th>
+<th>强制时点</th>
+<th>对本平台的约束</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GB 44495-2024</strong>《汽车整车信息安全技术要求》</td>
+<td>信息安全管理体系 + 外部连接/通信/软件升级/数据安全（对标 UN R155）</td>
+<td>新申报车型 <strong>2026-07-01</strong></td>
+<td>身份鉴别、访问控制、通信防护、入侵检测</td>
+</tr>
+<tr>
+<td><strong>GB 44496-2024</strong>《汽车软件升级通用技术要求》</td>
+<td>OTA 全流程：告知、版本读取、安全保护、先决条件、电量保障、失败处理（对标 UN R156）</td>
+<td>新申报车型 <strong>2026-07-01</strong></td>
+<td>§9 OTA 全部设计依据</td>
+</tr>
+<tr>
+<td><strong>GB 44497-2024</strong>《自动驾驶数据记录系统 DSSAD》</td>
+<td>数据记录/存储/读取/信息安全</td>
+<td>2026-01-01（自动驾驶车辆）</td>
+<td>仅当涉及自动驾驶功能</td>
+</tr>
+<tr>
+<td><strong>GB/T 32960-2025</strong> 全系列</td>
+<td>新能源远程监控 + 强制上报</td>
+<td>已实施（.2 终端 2026-02-01）</td>
+<td>§6 协议、§7 终端缓存</td>
+</tr>
+<tr>
+<td><strong>《汽车数据安全管理若干规定（试行）》</strong></td>
+<td>数据分类分级、重要数据、个人信息</td>
+<td>2021 起</td>
+<td>数据分类分级 + 重要数据目录</td>
+</tr>
+<tr>
+<td><strong>《汽车数据出境安全指引（2026版）》</strong></td>
+<td>重要数据判定、三种出境管理方式、九类豁免</td>
+<td>2026</td>
+<td>§8.3 数据出境</td>
+</tr>
+<tr>
+<td>等保三级（GB/T 22239）</td>
+<td>通用安全基线</td>
+<td>—</td>
+<td>身份鉴别、审计、密钥管理</td>
+</tr>
+<tr>
+<td>个保法</td>
+<td>车主个人信息</td>
+<td>—</td>
+<td>位置轨迹属敏感个人信息，需单独同意</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h28">8.2 三条硬要求落到架构</h3>
+<ol>
+<li><strong>数据分类分级先行</strong>：位置轨迹、驾驶行为属敏感个人信息；车辆 CAN 原始数据、地理围栏内密集车队位置可能构成重要数据。<strong>P0 就要建数据分类分级表与重要数据目录</strong>（《出境指引》要求识别备案，变化 30% 以上三个月内更新备案）。这不是文档工作，是数据模型的字段级打标。</li>
+<li><strong>通信加密</strong>：传输层 TLS 1.3 / 国密 SM2+SM4（政企与等保倾向国密）；<strong>控车指令与 OTA 包必须单独签名</strong>（不只是通道加密，是消息级签名验签）。</li>
+<li><strong>审计独立</strong>：控车、OTA、数据导出、权限变更，全部记独立审计库、只追加、独立账号。</li>
+</ol>
+<h3 id="h29">8.3 数据出境（若有出海/外资背景）</h3>
+<p>《出境指引 2026 版》：默认重要数据境内存储；<strong>OTA 升级软件包源代码、安全漏洞/安全事件相关重要数据可免于申报出境安全评估</strong>（但须事先向主管部门报告/备案）。架构上：<strong>出境通道单独成网关</strong>，重要数据出境走审批 + 留痕，不与业务数据混流。</p>
+<figure id="fig6"><img src="assets/fig6.png" alt="安全合规与控车分级" loading="lazy"><figcaption><b>图 6 · 安全合规</b>　2026 强制清单落到架构；控车按 L0–L3 分级，<b>L3（行驶相关）在协议解析层就不存在指令码</b>。</figcaption></figure>
+
+<hr />
+<h2 id="h30">§9 远程控车与 OTA：车规级与一般 IoT 的本质差异</h2>
+<h3 id="h31">9.1 远程控车安全分级（架构上分级，不是提示上分级）</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>级别</th>
+<th>动作</th>
+<th>安全要求</th>
+<th>实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L0 查询</td>
+<td>读位置/状态/续航</td>
+<td>认证即可</td>
+<td>读设备影子</td>
+</tr>
+<tr>
+<td>L1 舒适</td>
+<td>空调、车窗、座椅加热</td>
+<td>用户确认 + <strong>车辆驻车状态校验</strong></td>
+<td>下发前查影子确认 P 挡</td>
+</tr>
+<tr>
+<td>L2 安防</td>
+<td>车门解锁、启动、寻车</td>
+<td><strong>二次认证</strong>（生物特征/PIN）+ 地理围栏 + 一次性时效令牌 + 消息级签名</td>
+<td>独立鉴权服务，令牌一次性、短时效</td>
+</tr>
+<tr>
+<td><strong>L3 行驶相关</strong></td>
+<td>制动、转向、动力</td>
+<td><strong>架构上不留通路</strong></td>
+<td><strong>禁做</strong>——平台不暴露任何影响行驶安全的下行指令</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>核心纪律</strong>：L3 不是"更难做"，是"<strong>不做</strong>"。一般 IoT 的"远程控制"心智直接套到车上会出人命。L1/L2 与 L3 之间不是权限差异，是<strong>有没有这条代码路径</strong>的差异——L3 在网关协议解析层就不存在对应指令码。</p>
+<h3 id="h32">9.2 OTA（GB 44496 是强制依据）</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>机制</th>
+<th>设计</th>
+<th>依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>双分区 A/B</td>
+<td>新固件写备用分区，校验通过后切换，失败自动回退旧分区</td>
+<td>GB 44496 失败处理</td>
+</tr>
+<tr>
+<td>升级前置检查</td>
+<td>电量（SOC 阈值）、信号强度、驻车状态、存储空间</td>
+<td>GB 44496 先决条件 + 电量保障</td>
+</tr>
+<tr>
+<td>签名验签</td>
+<td>升级包 SM2/RSA 签名，<strong>车端验签通过才允许刷写</strong>；私钥不出 HSM</td>
+<td>GB 44496 安全保护</td>
+</tr>
+<tr>
+<td>灰度分批</td>
+<td>按车型/区域/批次灰度，首批小流量观察，异常自动暂停</td>
+<td>控制爆炸半径</td>
+</tr>
+<tr>
+<td>用户告知</td>
+<td>升级前告知 + 升级记录留存（可追溯）</td>
+<td>GB 44496 告知义务</td>
+</tr>
+<tr>
+<td>差分升级</td>
+<td>大包差分，降低弱网传输量</td>
+<td>与 §7 弱网协同</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>与一般 IoT OTA 的差异</strong>：消费级 IoT 升级失败最坏是设备变砖；<strong>车辆 OTA 失败可能涉及行车安全</strong>（动力、制动、电池管理 ECU）。所以分区、回滚、前置检查、灰度不是"最佳实践"，是 GB 44496 的强制项，也是法律责任的边界。</p>
+<hr />
+<h2 id="h33">§10 落地路线（walking skeleton，3~5 人，约 24 周）</h2>
+<p><strong>先走通骨架，再加厚度</strong>。P0 的产出不是功能，是"50 万连接扛得住 + 端到端不丢"的可验证骨架。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>周期</th>
+<th>关键交付</th>
+<th>验收判据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P0 骨架</strong></td>
+<td>W1–W4</td>
+<td>Netty 网关（808）单机跑通 + Kafka + TDengine 最小链路 + 双键幂等</td>
+<td>单节点压测到目标连接数；端到端一帧从车端到时序库不丢</td>
+</tr>
+<tr>
+<td><strong>P1 可靠</strong></td>
+<td>W5–W12</td>
+<td>弱网补传全套（断点续传/优先级/防风暴）+ 设备影子 + 双栈（EMQX）+ 数据分类分级</td>
+<td>断连 30 分钟恢复，P0/P1 延迟 ≤60s、完整率 100%</td>
+</tr>
+<tr>
+<td><strong>P2 业务</strong></td>
+<td>W13–W18</td>
+<td>远程诊断、告警中心、Flink 实时告警/围栏、远程控车 L0–L2</td>
+<td>控车分级生效，L3 架构上无通路（代码评审验证）</td>
+</tr>
+<tr>
+<td><strong>P3 合规与 OTA</strong></td>
+<td>W19–W24</td>
+<td>OTA（A/B/签名/灰度）+ 合规清单落地 + GB/T 32960 上报对接 + 压测到 50 万</td>
+<td>GB 44496 全流程演练；32960 上报通过对接测试</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>3~5 人的排布</strong>：1 人网关（Netty/连接）、1 人数据链路（Kafka/Flink/TDengine）、1 人业务（诊断/控车/OTA）、1 人协议与合规（双国标/数据分类）、负责人（架构 + 核心代码 + 跨团队）。负责人必须亲手写代码——<strong>网关接入、数据解析、补传这三个模块不能外包</strong>，它们是全平台的咽喉。</p>
+<figure id="fig7"><img src="assets/fig7.png" alt="24 周落地路线" loading="lazy"><figcaption><b>图 7 · 落地路线</b>　24 周 walking skeleton，3–5 人；P0 骨架即打通「车端 → 时序库」垂直切片，每个阶段都有可验证的验收判据。</figcaption></figure>
+
+<hr />
+<h2 id="h34">§11 ADR（关键决策记录）</h2>
+<h3 id="h35">ADR-C01：接入网关双栈（Netty + EMQX），不追求统一接入层</h3>
+<p><strong>Context</strong>：JT/T 808 私有二进制 TCP 与 MQTT 标准协议并存。<strong>Decision</strong>：Netty 自研处理 808，EMQX 处理 MQTT，统一发生在协议适配层而非接入层。<strong>Consequences</strong>：+ 各自用最优件、协议解析可控；- 两套接入栈的运维与监控。<strong>Reversibility</strong>：适配层是唯一定义点，将来换掉任一栈不影响下游。</p>
+<h3 id="h36">ADR-C02：TDengine 而非 InfluxDB，理由是设备基数</h3>
+<p><strong>Context</strong>：50 万 vin × 数百信号。<strong>Decision</strong>：TDengine 一设备一表。<strong>Consequences</strong>：+ 规避 tag 高基数 OOM、国产化友好；- 生态与 SQL 方言有学习成本。<strong>Reversibility</strong>：时序访问走统一 DAO，换库只改 DAO。</p>
+<h3 id="h37">ADR-C03：补传与实时分通道，宁慢不乱</h3>
+<p><strong>Context</strong>：补传数据时间戳早于到达时间，进实时流会触发误报。<strong>Decision</strong>：补传独立 Kafka topic + 独立处理链路，实时告警只消费实时流。<strong>Consequences</strong>：+ 不误报、时间轴不乱；- 多一条链路。<strong>Reversibility</strong>：topic 划分是配置，可合并但需重放验证。</p>
+<h3 id="h38">ADR-C04：远程控车 L3 架构上禁做</h3>
+<p><strong>Context</strong>：车辆下行控制的安全等级远超一般 IoT。<strong>Decision</strong>：L3（制动/转向/动力）在协议解析层不实现对应指令码，L1/L2 走分级鉴权。<strong>Consequences</strong>：+ 安全责任边界清晰；- 放弃部分"远程驾驶"类卖点。<strong>Reversibility</strong>：单向门，不做。</p>
+<h3 id="h39">ADR-C05：合规 P0 进架构，不事后补</h3>
+<p><strong>Context</strong>：GB 44495/44496 已强制、32960 已升 2025 版、出境指引已出 2026 版。<strong>Decision</strong>：数据分类分级、重要数据目录、控车分级、OTA 安全在 P0/P3 排期内落地。<strong>Consequences</strong>：+ 不做重构级返工；- P0 交付物里多了合规工件。<strong>Reversibility</strong>：无（这是底线）。</p>
+<hr />
+<h2 id="h40">§12 TCO（示例口径，非报价）</h2>
+<p>私有化/专有云 + 固定成本结构。示例假设：服务器单价、3 年折旧、PUE 1.4、电价 0.8 元/kWh、人力 30 万/人年——<strong>金额须询价，架构师不拍板</strong>。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>档位</th>
+<th>在线规模</th>
+<th>网关+计算+存储节点</th>
+<th>年运行成本（示例）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T1 试点</td>
+<td>5 万车</td>
+<td>~12 节点</td>
+<td>≈ 60–90 万</td>
+</tr>
+<tr>
+<td>T2 量产</td>
+<td>20 万车</td>
+<td>~35 节点</td>
+<td>≈ 160–220 万</td>
+</tr>
+<tr>
+<td>T3 平台</td>
+<td>50 万车</td>
+<td>~70 节点</td>
+<td>≈ 320–450 万</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>成本大头是<strong>为峰值（补传风暴）常备的计算与存储</strong>，不是稳态。降本第一手段是 §7.4 的整形与错峰把峰值压下来，而不是砍稳态资源。</p>
+</blockquote>
+<hr />
+<h2 id="h41">§13 不做清单</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>不做</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用 EMQX 硬塞 JT/T 808 协议插件</td>
+<td>把 MQTT broker 改成四不像，协议解析失控</td>
+</tr>
+<tr>
+<td>自研 MQTT broker</td>
+<td>会话/遗嘱/保留消息/QoS 状态机重复造轮子且易错</td>
+</tr>
+<tr>
+<td>用 InfluxDB 扛 50 万设备基数</td>
+<td>tag 高基数 OOM 是结构问题，调优救不了</td>
+</tr>
+<tr>
+<td>远程控车开放 L3（行驶相关）</td>
+<td>人身安全 + GB 44496，架构上不留通路</td>
+</tr>
+<tr>
+<td>补传数据进实时告警流</td>
+<td>历史告警被当成"现在告警"触发误报</td>
+</tr>
+<tr>
+<td>用云端到达时间替代车端 eventTs</td>
+<td>补传场景时间轴全乱</td>
+</tr>
+<tr>
+<td>合规事后补</td>
+<td>GB 44495/44496 已强制，事后补是重构级成本</td>
+</tr>
+<tr>
+<td>把"通过 XX 认证"写在没拿证前</td>
+<td>只能写"对标 GB 44495/44496 评估维度"，绝不写"已通过"</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="h42">§14 待查证清单（不编、不猜）</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>待查证</th>
+<th>不定什么就不能定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>目标车型是纯商用（808）还是含新能源乘用（32960），比例</td>
+<td>协议栈投入分配</td>
+</tr>
+<tr>
+<td>2</td>
+<td>单 Netty 节点真实连接数上限（P0 压测）</td>
+<td>网关集群规模</td>
+</tr>
+<tr>
+<td>3</td>
+<td>TDengine 在本数据的实测压缩比</td>
+<td>存储成本与节点数</td>
+</tr>
+<tr>
+<td>4</td>
+<td>T-BOX 终端侧缓存容量与补传能力（与嵌入式团队确认）</td>
+<td>§7 终端机制能否落地</td>
+</tr>
+<tr>
+<td>5</td>
+<td>是否需对接上级监管平台（JT/T 809）与国家新能源平台（32960）</td>
+<td>上报链路工作量</td>
+</tr>
+<tr>
+<td>6</td>
+<td>是否涉及自动驾驶功能（GB 44497 DSSAD）</td>
+<td>是否加 DSSAD 链路</td>
+</tr>
+<tr>
+<td>7</td>
+<td>是否有数据出境需求（出海/外资）</td>
+<td>§8.3 出境网关是否建设</td>
+</tr>
+<tr>
+<td>8</td>
+<td>远程控车业务范围（客户要 L1/L2 到哪一级）</td>
+<td>鉴权与合规深度</td>
+</tr>
+<tr>
+<td>9</td>
+<td>等保目标级别与是否要求密评</td>
+<td>国密投入时点</td>
+</tr>
+<tr>
+<td>10</td>
+<td>中间件是否要求国产化替代</td>
+<td>Kafka/Redis/ES 选型边界</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+
+  </main>
+</div>
+
+<div class="lb" id="lb"><img src="" alt=""></div>
+<script>
+(function(){
+  var lb=document.getElementById('lb'),lbi=lb.querySelector('img');
+  document.querySelectorAll('figure img').forEach(function(im){
+    im.addEventListener('click',function(){lbi.src=im.src;lb.classList.add('on');});
+  });
+  lb.addEventListener('click',function(){lb.classList.remove('on');lbi.src='';});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'){lb.classList.remove('on');lbi.src='';}});
+
+  var links=[].slice.call(document.querySelectorAll('.side a[href^="#"]'));
+  var targets=links.map(function(a){return document.getElementById(a.getAttribute('href').slice(1));}).filter(Boolean);
+  function onScroll(){
+    var y=window.scrollY+110,cur=null;
+    targets.forEach(function(t){if(t.offsetTop<=y)cur=t;});
+    links.forEach(function(a){a.classList.remove('on');});
+    if(cur){var a=links.find(function(x){return x.getAttribute('href')==='#'+cur.id;});if(a)a.classList.add('on');}
+  }
+  window.addEventListener('scroll',onScroll,{passive:true});onScroll();
+})();
+</script>
+</body>
+</html>
