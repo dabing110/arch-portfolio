@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dabing110 · 平台架构作品集（车联网 / 物联网）</title>
+<meta name="description" content="车联网云平台架构设计与落地方案、物联网/车联网平台架构方法论。容量模型、双栈接入、弱网补传、安全合规、24 周落地路线。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="brand">dabing110<span>平台架构 · 物联网 / 车联网</span></div>
+    <nav class="nav">
+      <a href="index.html" class="on">作品集</a>
+      <a href="vehicle.html">车联网架构</a>
+      <a href="methodology.html">架构方法论</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section class="hero">
+    <div class="eyebrow">Architecture Portfolio</div>
+    <h1>把「端 — 管 — 云」这条链路，<br>从<em>容量</em>算到<em>可交付</em></h1>
+    <p class="sub">
+      这里放的不是概念图。是一份可以被逐条追问的工程方案：容量怎么算出来的、为什么这样选型、哪里会先失败、24 周怎么落地、哪些事明确不做。
+      方案里的每个数字都能追到假设，每处取舍都写了放弃了什么。
+    </p>
+    <div class="who">
+      <span>dabing110</span>
+      <span>平台架构 · 独立产出</span>
+      <span>物联网平台 / 车联网 / Agent 平台</span>
+    </div>
+  </section>
+
+  <section class="stats">
+    <div class="stat"><div class="n">50<small>万辆</small></div><div class="l">在线 T-BOX 容量上限<br>（结构对 10 万 / 100 万同样成立）</div></div>
+    <div class="stat"><div class="n">6.7<small>万帧/秒</small></div><div class="l">稳态吞吐<br>按上报频率与信号数推算</div></div>
+    <div class="stat"><div class="n">30<small>万帧/秒</small></div><div class="l">峰值吞吐<br>来源是断连车辆集中回连</div></div>
+    <div class="stat"><div class="n">24<small>周</small></div><div class="l">walking skeleton 到交付<br>3–5 人小队，四阶段验收</div></div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-t">Documents</div>
+    <h2>两份文档</h2>
+    <p class="lead">一份是具体场景的完整设计（车联网），一份是从三份实战方案里抽象出来的决策体系（方法论）。前者证明「能落地」，后者证明「可复用」。</p>
+
+    <div class="cards">
+      <a class="card" href="vehicle.html">
+        <div class="card-k">方案 · 01</div>
+        <div class="card-t">车联网云平台<br>架构设计与落地方案</div>
+        <div class="card-d">
+          50 万移动终端、弱网常态、双国标强制上报、车规级安全。覆盖接入网关、数据链路、协议规范、弱网补传、安全合规、远程控车与 OTA、24 周落地路线。
+        </div>
+        <div class="card-m"><span>15 节 · 7 张架构图 · 5 条 ADR</span><b>阅读 →</b></div>
+      </a>
+
+      <a class="card" href="methodology.html">
+        <div class="card-k">方法论 · 02</div>
+        <div class="card-t">物联网 / 车联网<br>平台架构方法论</div>
+        <div class="card-d">
+          从能源 AIoT、车联网、Agent 平台三份方案中抽象出的可复用决策体系：10 条不变式、6 个场景变量、9 个决策点、跨域映射表。
+        </div>
+        <div class="card-m"><span>10 条不变式 · 9 个决策点</span><b>阅读 →</b></div>
+      </a>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-t">Core Judgments</div>
+    <h2>这份方案的五条核心判断</h2>
+    <p class="lead">如果只读五段，读这五段。每一条都对应一个会被评审人追问的设计取舍。</p>
+
+    <div class="judges">
+      <div class="judge">
+        <div class="k">判断一 · 接入层</div>
+        <div class="v"><b>接入网关必须双栈，不为「统一」硬塞一个组件。</b>JT/T 808 是私有二进制 TCP 协议，EMQX 不支持也不该让它支持；MQTT 通道用成熟件。<b>统一发生在协议适配层，不在接入层</b>。</div>
+      </div>
+      <div class="judge">
+        <div class="k">判断二 · 数据完整性</div>
+        <div class="v"><b>弱网补传是生死线，不是附加功能。</b>移动性断连是常态。断点续传 + 五级优先级 + 防补传风暴决定完整性 SLO——做不好，数据是「看着在线、实际全是洞」。</div>
+      </div>
+      <div class="judge">
+        <div class="k">判断三 · 存储选型</div>
+        <div class="v"><b>时序库的决定性因素是设备基数，不是跑分。</b>50 万车 × 数百信号，InfluxDB 的 tag 高基数会 OOM；TDengine 的「一个设备一张表」天然匹配。<b>这是结构差异，调优弥补不了</b>。</div>
+      </div>
+      <div class="judge">
+        <div class="k">判断四 · 下行控制</div>
+        <div class="v"><b>控车按安全分级，L3（行驶相关）在架构上不留通路。</b>不是权限没给，是<b>协议解析层不存在那条指令码</b>。车门解锁和制动指令之间，隔着人身安全与 GB 44496。</div>
+      </div>
+      <div class="judge">
+        <div class="k">判断五 · 合规</div>
+        <div class="v"><b>合规是 2026 年的准入项，不是加分项。</b>GB 44495/44496 已强制、GB/T 32960 已升 2025 版、数据出境指引已出 2026 版。<b>P0 进架构，事后补是重构级的成本</b>。</div>
+      </div>
+      <div class="judge">
+        <div class="k">一条边界</div>
+        <div class="v"><b>不确定的事写进待查证清单，不编、不猜。</b>文档里标了「示例假设，非报价」的地方，就是还没有依据的地方；能把「不知道」说清楚，比给一个精确的错数字有用。</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-t">How to read</div>
+    <h2>怎么读</h2>
+    <p class="lead">按你有多少时间挑一条路径。</p>
+    <ol class="path">
+      <li><b>5 分钟</b>　只看车联网方案 §1 结论先行（五条判断）与 §2 容量模型。<span>—— 判断这份方案有没有真东西。</span></li>
+      <li><b>20 分钟</b>　§1 → §2 容量 → §4 接入网关 → §7 弱网补传 → §10 落地路线。<span>—— 看关键设计与落地节奏。</span></li>
+      <li><b>深读</b>　全文 15 节 + 七张图 + 五条 ADR + §13 不做清单 + §14 待查证清单。<span>—— §13 和 §14 往往比前面更能看出作者是否真做过事。</span></li>
+      <li><b>换场景</b>　读方法论：§1 十条不变式 → §2 六个变量 → §3 九个决策点 → §4 跨域映射表。<span>—— 验证这套判断能不能迁移到储能 / 充电桩 / 工业。</span></li>
+    </ol>
+  </section>
+
+  <footer class="foot">
+    <div class="r">
+      <div>dabing110 · 平台架构作品集</div>
+      <div>MIT License　·　github.com/dabing110</div>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
