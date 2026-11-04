@@ -1,0 +1,1702 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>能源 / 工业 AIoT 平台架构（深度版） · dabing110 架构作品集</title>
+<meta name="description" content="能源 / 工业 AIoT 平台架构（深度版）">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="brand">dabing110<span>平台架构 · 物联网 / 车联网</span></div>
+    <nav class="nav">
+      <a href="index.html">作品集</a>
+      <a href="vehicle.html">车联网架构</a>
+      <a href="aiot.html" class="on">AIoT 架构</a>
+      <a href="methodology.html">架构方法论</a>
+      <a href="https://github.com/dabing110" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="side">
+    <div class="side-t">本文目录</div>
+    <ul><li><a href="#h1">D1 · 边云职责切分</a></li><li><a href="#h10">D2 · 数据不丢语义</a></li><li><a href="#h21">D3 · 时序存储选型</a></li><li><a href="#h33">D4 · 安全与合规</a></li><li><a href="#h42">D5 · OTA 与远程运维</a></li><li><a href="#h50">D6 · 失败模式与成熟度</a></li><li><a href="#h58">六、TCO 与交付人天</a></li><li><a href="#h59">七、Walking Skeleton</a></li><li><a href="#h60">八、SLO / SLI 与错误预算</a></li><li><a href="#h61">九、不做什么</a></li><li><a href="#h62">十、待查证清单</a></li></ul>
+    <div class="side-foot">
+      作者：dabing110<br>
+      <a href="index.html">← 返回作品集</a>
+    </div>
+  </aside>
+
+  <main class="doc">
+    <div class="doc-meta"><b>能源 / 工业 AIoT 平台架构（深度版）</b> · 作者 dabing110　|　11 个章节 · 31 张数据表 · 8 张架构图</div>
+    <blockquote>
+<p>定位：不是一份组件清单，而是<strong>五个决策各自挖到「碰到标准 / 物理 / 钱」为止</strong>。每个决策统一七段：原始约束 → 备选与否决 → 量化对比 → FMEA → 可证伪预测 → 验证方法 → 决策与代价。</p>
+<p>阅读顺序建议：<strong>D1 边云切分 → D2 不丢语义 → D3 时序选型 → D4 安全合规 → D5 OTA</strong>，D6 与后三节是落地与成本，按需查阅。凡不确定处标「待查证」，不编数字。</p>
+</blockquote>
+<hr />
+<p><strong>五个决策</strong></p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>决策</th>
+<th>一句话结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1</td>
+<td>接入层形态与边云职责切分</td>
+<td>边云协同；<strong>边缘只做"与物理世界强相关且不能容忍云端往返"的事</strong></td>
+</tr>
+<tr>
+<td>D2</td>
+<td>端到端数据不丢语义</td>
+<td><code>at-least-once + 幂等去重</code>；<strong>端到端 exactly-once 不存在</strong></td>
+</tr>
+<tr>
+<td>D3</td>
+<td>时序存储选型</td>
+<td>TDengine；<strong>真坑不是写入 TPS，是标签基数爆炸</strong></td>
+</tr>
+<tr>
+<td>D4</td>
+<td>安全与合规基线</td>
+<td>等保三级 + 国密；<strong>证书批量过期是最大隐性事故</strong></td>
+</tr>
+<tr>
+<td>D5</td>
+<td>OTA</td>
+<td>签名 + 灰度 + A/B + 前置检查；<strong>变砖一次 = 客户信任归零</strong></td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<figure id="fig1"><img src="assets/aiot-fig1.png" alt="AIoT 平台总体架构" loading="lazy"><figcaption>图 1　AIoT 平台总体架构（现场层 / 边缘 / 云三级职责与数据流向）</figcaption></figure>
+<h2 id="h1">D1 · 接入层形态与边云职责切分</h2>
+<h3 id="h2">① 原始约束</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>约束</th>
+<th>事实</th>
+<th>硬性影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>存量设备协议</td>
+<td>能源现场大量 <code>DL/T 645-2007</code>、<code>Modbus RTU</code>（RS485），<strong>无 IP 栈</strong></td>
+<td>设备不可能直连云，必须有南向转换</td>
+</tr>
+<tr>
+<td>低功耗设备</td>
+<td>NB-IoT 工作在 PSM/eDRX，长连接 keepalive 会打干电池</td>
+<td>MQTT 长连接不适用，需 CoAP/HTTP 短连接</td>
+</tr>
+<tr>
+<td>视频</td>
+<td>机器视觉是核心卖点；一路 1080p H.264 ≈ 2–4 Mbps</td>
+<td>全量上云带宽不可承受</td>
+</tr>
+<tr>
+<td>团队</td>
+<td>3–5 人，无专职嵌入式（假设）</td>
+<td>边缘侧复杂度必须极低</td>
+</tr>
+<tr>
+<td>部署</td>
+<td>To G 客户内网私有化，可能无公网出口</td>
+<td>边缘必须能独立存活</td>
+</tr>
+<tr>
+<td>生态</td>
+<td>华为 Atlas 500 / IEF / HiLens 可使用（待确认商务关系）</td>
+<td>视觉场景可借力，不自研</td>
+</tr>
+<tr>
+<td>存量现实（2026 行业口径）</td>
+<td><strong>约 70% 已安装工控资产服役超 15 年</strong>，PLC 多为"不可改动"的既有资产</td>
+<td>架构必须走 Brownfield 路线：<strong>不动 PLC</strong>，靠边缘网关桥接 + 夹具式加装传感器</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h3">② 备选方案与否决理由</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>方案</th>
+<th>描述</th>
+<th>优点</th>
+<th>否决理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A 纯云直连</td>
+<td>设备 → 云 MQTT</td>
+<td>架构最简单</td>
+<td>❌ 存量 RS485 接不了；视频带宽不可行；断网即丢</td>
+</tr>
+<tr>
+<td>B 全边缘自治</td>
+<td>边缘独立跑全部业务</td>
+<td>断网完全可用</td>
+<td>❌ 多站点运维爆炸；数据无法汇聚；升级地狱（N 个站点版本漂移）</td>
+</tr>
+<tr>
+<td>C 哑管道边缘</td>
+<td>边缘只做透传，不缓存不推理</td>
+<td>边缘超简单</td>
+<td>❌ 无法断网续传、无法边缘告警，等于方案 A</td>
+</tr>
+<tr>
+<td><strong>D 边云协同</strong></td>
+<td>边缘做协议转换+缓存+推理；云做业务+汇聚+AI 训练</td>
+<td>覆盖存量、断网可用、带宽可控</td>
+<td>✅ <strong>采纳</strong>，代价是多一层软件与运维</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h4">③ 边云职责切分（本节核心）</h3>
+<p><strong>判断准则（一句话）</strong>：</p>
+<blockquote>
+<p><strong>边缘只做"与物理世界强相关、且不能容忍云端往返"的事。凡"变更频率高"或"需要全局视角"的，一律上云。</strong></p>
+</blockquote>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>能力</th>
+<th>边缘</th>
+<th>云</th>
+<th>切分理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>南向协议转换</td>
+<td>✅</td>
+<td>❌</td>
+<td>设备物理上连在边缘</td>
+</tr>
+<tr>
+<td>数据缓存续传</td>
+<td>✅</td>
+<td>兜底</td>
+<td>断网时云不可达，边缘是唯一存身之处</td>
+</tr>
+<tr>
+<td>阈值告警</td>
+<td>✅ <strong>本地自治</strong></td>
+<td>✅ 全局规则</td>
+<td>断网时也必须能报警（安全底线）</td>
+</tr>
+<tr>
+<td>视频推理</td>
+<td>✅</td>
+<td>训练/模型下发</td>
+<td>带宽约束</td>
+</tr>
+<tr>
+<td><strong>业务规则/流程</strong></td>
+<td>❌</td>
+<td>✅</td>
+<td><strong>变更频繁</strong>——放边缘意味着 N 个站点依次升级</td>
+</tr>
+<tr>
+<td>设备主鉴权</td>
+<td>本地缓存</td>
+<td>✅ 权威</td>
+<td>云是唯一可信源，边缘只缓存凭据</td>
+</tr>
+<tr>
+<td>OTA 决策</td>
+<td>中转</td>
+<td>✅ 决策</td>
+<td>灰度策略需全局视角</td>
+</tr>
+<tr>
+<td>数据聚合/报表</td>
+<td>❌</td>
+<td>✅</td>
+<td>需跨站点全局视角</td>
+</tr>
+<tr>
+<td>时序存储</td>
+<td>短周期本地</td>
+<td>✅ 长期</td>
+<td>边缘只留最近 N 天</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>这张表本身就是交付物</strong>——它决定了代码放哪里、谁升级、出了事故找谁。</p>
+<figure id="fig2"><img src="assets/aiot-fig2.png" alt="边缘与云端职责切分" loading="lazy"><figcaption>图 2　边缘与云端职责切分：边缘只做四件事</figcaption></figure>
+<h3 id="h5">③-补 语义层与标准链路</h3>
+<p>上表只写了"南向协议转换"，但<strong>转换成什么</strong>必须说清楚，否则每个消费方都要自己重新理解点位，集成成本会随站点数线性膨胀。2026 年工业界的主流做法是一条标准链路：</p>
+<pre><code>现场层（不动）   Modbus RTU / DL-T 645 / PROFINET / 老 PLC 寄存器
+      │ 边缘网关用原生驱动读取（Kepware / Ignition Edge / 自研插件）
+      ▼
+语义桥接层      边缘网关跑 OPC UA Server，把寄存器包装成带类型/单位/时间戳/质量码的信息模型
+      │ 北向统一出口
+      ▼
+传输层          MQTT + Sparkplug B（状态化消息：出生证明/死亡证明/心跳），broker 置于工业 DMZ
+      │ 一处发布、多处订阅（UNS 统一命名空间）
+      ▼
+消费层          时序库 / 数字孪生 / MES / ERP / 看板，各订阅自己的 topic，不做点对点对接
+</code></pre>
+<p><strong>为什么这样选（选型判据，不是跟风）</strong>：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>决策</th>
+<th>选它</th>
+<th>不选它</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>语义建模</td>
+<td><strong>OPC UA</strong></td>
+<td>裸 MQTT topic + JSON blob</td>
+<td>OPC UA 自带类型、工程单位、质量码与可浏览节点树，是数字孪生与审计的基础；裸 JSON 每个消费方都要人工映射</td>
+</tr>
+<tr>
+<td>广域传输</td>
+<td><strong>MQTT Sparkplug B</strong></td>
+<td>OPC UA 跨 WAN 轮询</td>
+<td>Sparkplug 头部仅 2 字节、broker 托管扇出，线性扩到百万端点；OPC UA C/S 轮询在万点以上连接开销爆炸</td>
+</tr>
+<tr>
+<td>集成拓扑</td>
+<td><strong>UNS 统一命名空间</strong></td>
+<td>点对点 SCADA</td>
+<td>新增一个消费方 = 订阅已有 topic，从数周降到数小时；行业报告集成开销降 30%–50%</td>
+</tr>
+<tr>
+<td>老旧设备</td>
+<td><strong>夹具式加装传感器</strong></td>
+<td>改造/更换 PLC</td>
+<td>振动、温度、电流互感器外挂即可拿约 80% 的分析价值，且<strong>不触碰控制器</strong>，OT 侧阻力最小</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>物模型 / 设备影子是边云之间的语义契约</strong>：设备状态、告警、能耗统一成 JSON Schema（与 §D3 的时序表结构解耦），断网期间边缘持有影子、云端持有期望态，恢复后按状态差异同步。这一层不做，后面每接一类设备都要重写一遍解析器。</p>
+<blockquote>
+<p><strong>诚实的边界</strong>：如果客户全是新型 4G/MQTT 设备、无视频、无存量 RS485，这条语义桥接层可以砍掉（回到 D1 ⑦ 的"边缘可裁"判断）。所以<strong>设备清单与协议占比仍是第一个要问清的问题</strong>（已列入待查证）。</p>
+</blockquote>
+<h3 id="h6">④ FMEA</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>失效模式</th>
+<th>影响</th>
+<th>S</th>
+<th>O</th>
+<th>D</th>
+<th>RPN</th>
+<th>措施</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>边缘设备被替换/拆走</td>
+<td>身份伪造、数据投毒</td>
+<td>9</td>
+<td>5</td>
+<td>7</td>
+<td>315</td>
+<td>边缘证书 + 设备绑定 + 异常行为检测</td>
+</tr>
+<tr>
+<td>边缘程序升级失败</td>
+<td>整站失联</td>
+<td>8</td>
+<td>5</td>
+<td>5</td>
+<td>200</td>
+<td>A/B 分区 + 远程回滚 + 心跳超时自动降级旧版</td>
+</tr>
+<tr>
+<td>边缘缓存盘满</td>
+<td>新数据无法缓存→丢</td>
+<td>8</td>
+<td>6</td>
+<td>4</td>
+<td>192</td>
+<td>优先级淘汰（关键数据最后淘汰）+ 容量告警</td>
+</tr>
+<tr>
+<td>边缘时钟漂移</td>
+<td>时间戳错乱→去重失效</td>
+<td>7</td>
+<td>6</td>
+<td>6</td>
+<td>252</td>
+<td>定期与云端校时</td>
+</tr>
+<tr>
+<td>南向驱动解析异常</td>
+<td>数据错乱或丢弃</td>
+<td>7</td>
+<td>5</td>
+<td>6</td>
+<td>210</td>
+<td>驱动插件化 + 原始报文留档可回放</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h7">⑤ 可证伪预测</h3>
+<ol>
+<li><strong>若把业务规则放边缘</strong>，一次规则变更需要 N 个站点依次升级，交付周期从"1 天"变成"2 周以上"，且必然出现版本漂移。</li>
+<li><strong>若边缘不做本地阈值告警</strong>（只依赖云端），断网期间客户现场的安全告警将完全失效——这在监管类项目中是验收不通过的。</li>
+<li><strong>若边缘不做缓存</strong>，断网 30 分钟即产生不可恢复的数据缺口（可由 D2 的注入实验验证）。</li>
+</ol>
+<h3 id="h8">⑥ 验证方法</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>验证</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>断网自治</td>
+<td>拔掉边缘上行网线 2h</td>
+<td>本地告警正常触发；恢复后数据完整回灌</td>
+</tr>
+<tr>
+<td>边缘回滚</td>
+<td>推送一个故意损坏的固件</td>
+<td>自动/手动回滚成功，站点恢复在线 &lt; 10min</td>
+</tr>
+<tr>
+<td>南向兼容</td>
+<td>接入 3 种真实存量设备（电表/PLC/传感器）</td>
+<td>解析成功率 100%，原始报文可回放</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h9">⑦ 决策与代价</h3>
+<p><strong>决策</strong>：采纳 D（边云协同），边缘能力收敛为<strong>协议转换 + 缓存续传 + 本地告警 + 视频推理</strong>四件事。</p>
+<p><strong>代价</strong>
+| 代价 | 量化 |
+|---|---|
+| 自研边缘网关 MVP | ≈ 1 人月（若客户已有工控机可零硬件成本） |
+| 每种南向协议驱动 | 2–3 人周（可外采现成工业网关规避） |
+| 边缘硬件 BOM | 网关 600–1500 元/台；视觉盒 2000–8000 元/路 |
+| 运维复杂度 | 从"1 个云环境"变为"N 个站点 × 1 个云"，需远程运维体系（见 D5） |</p>
+<blockquote>
+<p><strong>诚实说明</strong>：边缘层是这个方案里<strong>唯一增加团队负担的部分</strong>。如果客户设备全是新型 4G/MQTT 设备且无视频，边缘可以砍掉——所以这是<strong>必须问清设备清单</strong>才能定的事（见 §待补充信息）。</p>
+</blockquote>
+<hr />
+<h2 id="h10">D2 · 端到端数据不丢语义（摘要）</h2>
+<h3 id="h11">① 原始约束</h3>
+<p>计量数据用于结算对账，缺一条即账不平；招标常写"完整率 ≥ 99.9%"，与"计量不丢"存在语义冲突，<strong>必须当场澄清</strong>。</p>
+<h3 id="h12">② 语义结论（本决策的分水岭）</h3>
+<blockquote>
+<p><strong>端到端 Exactly-once 在 IoT 多跳异步架构中物理上不存在。</strong>
+正确目标 = <strong>At-least-once 传输 + 幂等去重 = 逻辑 Exactly-once</strong>。
+MQTT QoS 1 只是 at-least-once；QoS 2 的 exactly-once <strong>仅限 client↔broker，跨 bridge 即退化</strong>。</p>
+</blockquote>
+<h3 id="h13">③ 七个会丢/会重的点</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>环节</th>
+<th>默认行为下的失效</th>
+<th>必须的配置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>设备本地</td>
+<td>直接发，掉电即丢</td>
+<td>flash ring buffer</td>
+</tr>
+<tr>
+<td>②</td>
+<td>设备→Broker</td>
+<td>QoS 0 丢；session 过期丢离线消息</td>
+<td>QoS 1 + <code>Clean Start=false</code> + <code>Session Expiry &gt;</code> 最长离线</td>
+</tr>
+<tr>
+<td>③</td>
+<td>Broker 落盘</td>
+<td>内存队列，重启丢</td>
+<td>持久化会话（不用 retained 存业务数据）</td>
+</tr>
+<tr>
+<td>④</td>
+<td>Bridge</td>
+<td>失败静默丢、无回压</td>
+<td>buffer + 重试 + DLQ + 堆积监控</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>MQ 持久化</td>
+<td>异步刷盘 / 副本不足</td>
+<td>Quorum Queue / <code>acks=all</code>+<code>min.insync=2</code>+RF3</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>消费</td>
+<td>先 ack 后处理=丢；先处理后 ack=重</td>
+<td><strong>手动 ack，成功后再 ack</strong>（重复由 ④ 去重消化）</td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>入库</td>
+<td>批量 insert 部分失败静默丢</td>
+<td>校验影响行数 + 本地 WAL 重试 + 日终对账</td>
+</tr>
+</tbody>
+</table></div>
+<figure id="fig3"><img src="assets/aiot-fig3.png" alt="七个会丢会重的点" loading="lazy"><figcaption>图 3　数据链路上七个会丢、会重的点</figcaption></figure>
+<p><strong>两个最容易被忽略的</strong>：⑥ 重复的真正来源在消费侧（所以去重不能放 broker）；⑦ 批量入库部分失败会静默丢（不检查影响行数就发现不了）。</p>
+<h3 id="h14">④ 去重键设计</h3>
+<pre><code>业务去重键   = (deviceId, pointId, eventTs)   → 防&quot;重复入账&quot;
+传输连续性键 = (deviceId, seq)                → 防&quot;丢了不知道&quot;
+</code></pre>
+<ul>
+<li><strong>只用去重键有盲区</strong>：设备静默丢 3 条，云端收不到就没有 key 可判，永远发现不了。必须靠 seq 跳号。</li>
+<li><strong>去重键的软肋</strong>：它把"时间"这个最不可靠的东西变成主键。时钟快 → 重复入账；时钟回拨 → <strong>真数据被当重复吞掉</strong>。必须校时 + 偏移标记 + 无 RTC 设备退化用 seq。</li>
+<li>存储三层：Redis 布隆（仅判"肯定没见过"）+ Redis <code>SET NX EX</code>（TTL ≥ 7 天）+ MySQL 唯一索引兜底；TDengine 同时间戳行为 <code>⚠️待查证</code>。</li>
+</ul>
+<figure id="fig4"><img src="assets/aiot-fig4.png" alt="去重键与连续性键" loading="lazy"><figcaption>图 4　去重键与连续性键：一个防重复入账，一个防静默丢失</figcaption></figure>
+<h3 id="h15">⑤ 乱序（比丢更隐蔽）</h3>
+<p>补传导致到达序 ≠ 事件序 → 时序错乱、<strong>告警误判（先收到恢复再收到超限）</strong>、聚合错。对策：告警与聚合一律基于 <strong>event time + watermark</strong>，不用 processing time。</p>
+<h3 id="h16">⑥ 补传风暴（可算）</h3>
+<pre><code>正常：1000 台 × 5min = 3.3 msg/s
+断网 2h 积压 24,000 条 → 同恢复瞬间 ≈ 2,400 msg/s = 正常的 720 倍
+→ EMQX 队列逼近上限 → 流控 → 正常设备被踢 → 看起来像&quot;大面积离线&quot;
+</code></pre>
+<p>对策：<strong>网关层令牌桶限速（≤20 msg/s）是核心</strong>——限流不能做在 broker，因为 broker 的限流手段是"丢弃"，直接违背不丢目标。辅以随机抖动 0–300s 错峰 + 关键数据优先分级补传。</p>
+<h3 id="h17">⑦ FMEA（摘要，RPN&gt;200 必整改）</h3>
+<p>设备无本地缓存 504 · 批量入库静默丢 320 · 时钟不准 294 · Bridge 无重试 256 · 消费先 ack 252 · Broker 队列溢出 240 · 补传风暴 147 · 去重 TTL 过短 120</p>
+<h3 id="h18">⑧ 可证伪预测</h3>
+<ol>
+<li>不做网关限速 → 1000 台断网 2h 同恢复，30s 内队列逼近上限，正常设备 P99 劣化 &gt; 1s</li>
+<li>时钟偏移 &gt; 上报周期 1/2 → 去重出现"反向错误"（真数据被吞），误判率非线性上升</li>
+<li>只做去重键不做 seq → 设备静默丢 3 条永远无法发现</li>
+<li>去重 TTL 设 1h → 断网 4h 补传的重复数据全部入账</li>
+</ol>
+<h3 id="h19">⑨ 验证</h3>
+<p>注入 <strong>100 万条含 5% 重复 + 5% 乱序 + 1% 迟到 4h</strong> 的数据 → <strong>去重后误差必须为 0</strong>；netem 注入 20% 丢包验证续传完整率 100%；kill -9 消费者验证不丢。</p>
+<h3 id="h20">⑩ 代价与取舍</h3>
+<p>带宽月增 3–5 GB（可忽略）；补传从秒级变分钟级（<strong>必须提前告知甲方</strong>）；复杂度 2–3 人周；Redis 去重表 ~600MB。</p>
+<blockquote>
+<p><strong>一句话取舍：牺牲补传时效性，换数据完整性——迟到 10 分钟的数据，远好过丢掉的数据。</strong></p>
+</blockquote>
+<hr />
+<h2 id="h21">D3 · 时序存储选型对比</h2>
+<h3 id="h22">① 原始约束</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>约束</th>
+<th>事实</th>
+<th>影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据特征</td>
+<td>写多读少，按时间范围聚合查询</td>
+<td>需列式 + 时间索引</td>
+</tr>
+<tr>
+<td>保留期</td>
+<td>原始 3 个月，降采样后 1–3 年</td>
+<td>必须有降采样机制</td>
+</tr>
+<tr>
+<td><strong>国产化</strong></td>
+<td>政企项目常要求国产软件</td>
+<td>显著加权国产品</td>
+</tr>
+<tr>
+<td>团队</td>
+<td>3–5 人，无专职 DBA</td>
+<td>运维复杂度必须低</td>
+</tr>
+<tr>
+<td><strong>交付形态</strong></td>
+<td>闭源商业交付（私有化）</td>
+<td><strong>AGPL 传染性风险必须评估</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h23">② 候选横向对比</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>方案</th>
+<th>类型</th>
+<th>许可</th>
+<th>国产</th>
+<th>压缩比</th>
+<th>运维复杂度</th>
+<th>高基数容忍</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TDengine</strong></td>
+<td>专用时序</td>
+<td>AGPL / 商业</td>
+<td>✅</td>
+<td>10–20×</td>
+<td><strong>低</strong>（单机可撑）</td>
+<td><strong>高</strong>（一设备一子表）</td>
+<td>采纳</td>
+</tr>
+<tr>
+<td>InfluxDB</td>
+<td>专用时序</td>
+<td>MIT(1.x)/商业(2.x+)</td>
+<td>❌</td>
+<td>5–10×</td>
+<td>中</td>
+<td><strong>低（高基数坟场）</strong></td>
+<td>否决</td>
+</tr>
+<tr>
+<td>TimescaleDB</td>
+<td>PG 扩展</td>
+<td>Apache2(社区)</td>
+<td>❌</td>
+<td>PG 原生</td>
+<td>中（要会 PG 调优）</td>
+<td>中</td>
+<td>备选</td>
+</tr>
+<tr>
+<td>IoTDB</td>
+<td>专用时序</td>
+<td>Apache2</td>
+<td>✅</td>
+<td>高</td>
+<td>中</td>
+<td>高</td>
+<td>备选</td>
+</tr>
+<tr>
+<td>ClickHouse</td>
+<td>OLAP</td>
+<td>Apache2</td>
+<td>❌</td>
+<td>极高</td>
+<td><strong>高</strong>（运维重）</td>
+<td>高</td>
+<td>否决（团队负担）</td>
+</tr>
+<tr>
+<td>MySQL 分表</td>
+<td>关系库</td>
+<td>—</td>
+<td>—</td>
+<td>差</td>
+<td>低</td>
+<td>低</td>
+<td>否决（查询慢、膨胀快）</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h24">③ 量化对比（关键：算清拐点）</h3>
+<h3 id="h25">存储估算（1 万设备 / 5min / 300B）</h3>
+<pre><code>原始日增 = 10,000 × 288 条/天 × 300B ≈ 864 MB/天 ≈ 315 GB/年
+TDengine 压缩 10–20×  → 16–32 GB/年
+InfluxDB 压缩 5–10×   → 32–63 GB/年
+MySQL 无压缩 + 索引   → 400 GB+/年，且需分表
+</code></pre>
+<p>→ <strong>1 万设备下存储成本可以忽略，不构成选型依据。</strong></p>
+<h3 id="h26">写入量</h3>
+<pre><code>1 万设备 @5min  ≈ 33 行/秒
+10 万设备 @1min ≈ 1,667 行/秒
+</code></pre>
+<p>→ TDengine 单机官方标称可达百万级点/秒。<strong>写入量同样不构成瓶颈。</strong></p>
+<h3 id="h27">真正的瓶颈在哪（本决策的深度所在）</h3>
+<blockquote>
+<p><strong>IoT 时序选型的真坑不是写入 TPS，是「标签基数（cardinality）爆炸」。</strong></p>
+</blockquote>
+<p>现实数据模型：设备 ID × 产品型号 × 区域 × 客户 × 测点类型 —— 组合后标签基数可达<strong>百万到千万级</strong>。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>方案</th>
+<th>高基数下的表现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>InfluxDB</strong></td>
+<td>每个 series 需在内存维护索引；百万级 series 会导致 <strong>OOM</strong>（社区大量真实案例）。<strong>这是它的结构性缺陷</strong></td>
+</tr>
+<tr>
+<td><strong>TDengine</strong></td>
+<td>采用「<strong>一个设备一张子表</strong>」模型，子表数量可达百万级，标签（超级表 tag）与数据分离存储。<strong>天然规避高基数问题</strong></td>
+</tr>
+<tr>
+<td>TimescaleDB</td>
+<td>依赖 PG 分区，标签基数高时索引膨胀</td>
+</tr>
+<tr>
+<td>ClickHouse</td>
+<td>能扛，但需要精心设计排序键 + 运维重</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>这就是为什么选 TDengine 不是因为"国产"或"压缩好"，而是因为它的数据模型与 IoT 的现实形状匹配。</strong></p>
+<figure id="fig5"><img src="assets/aiot-fig5.png" alt="标签基数爆炸" loading="lazy"><figcaption>图 5　标签基数爆炸：一设备一子表与 tag 索引的结构差异</figcaption></figure>
+<h3 id="h28">④ 备选与否决理由</h3>
+<ul>
+<li>❌ <strong>InfluxDB</strong>：高基数 OOM 风险 + 2.x 后商业许可 + 非国产</li>
+<li>❌ <strong>ClickHouse</strong>：运维负担超出 3–5 人团队能力（需 ZooKeeper/Keeper、分区管理、合并调优）</li>
+<li>⚠️ <strong>TimescaleDB</strong>：若团队已有强 PG 能力可选，否则不占优</li>
+<li>✅ <strong>TDengine</strong>：一设备一子表 + 类 SQL + 单机可撑 + 国产</li>
+</ul>
+<h3 id="h29">⑤ FMEA</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>失效模式</th>
+<th>影响</th>
+<th>S</th>
+<th>O</th>
+<th>D</th>
+<th>RPN</th>
+<th>措施</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AGPL 许可违规</strong>（闭源交付未购商业授权）</td>
+<td><strong>法律风险，可能被要求开源</strong></td>
+<td>9</td>
+<td>6</td>
+<td>7</td>
+<td><strong>378</strong></td>
+<td><strong>交付前必须采购商业 license 或法务确认</strong></td>
+</tr>
+<tr>
+<td>子表数无上限增长</td>
+<td>元数据膨胀、启动慢</td>
+<td>7</td>
+<td>6</td>
+<td>5</td>
+<td>210</td>
+<td>子表生命周期管理 + 归档删除</td>
+</tr>
+<tr>
+<td>未做降采样</td>
+<td>存储与查询双爆</td>
+<td>7</td>
+<td>7</td>
+<td>3</td>
+<td>147</td>
+<td>连续查询/流计算自动降采样</td>
+</tr>
+<tr>
+<td>跨设备大范围聚合查询</td>
+<td>查询超时</td>
+<td>6</td>
+<td>6</td>
+<td>4</td>
+<td>144</td>
+<td>预聚合物化表 + 查询超时保护</td>
+</tr>
+<tr>
+<td>单机无副本</td>
+<td>磁盘故障即全丢</td>
+<td>9</td>
+<td>3</td>
+<td>4</td>
+<td>108</td>
+<td>3 副本 vgroup（或每日备份 + 快速重建）</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>RPN 最高的一项是 AGPL 许可风险，不是技术风险。</strong> 这是做过商业交付的人才会第一时间想到的事：TDengine 社区版是 AGPL，<strong>闭源私有化交付必须买商业授权</strong>，这笔钱要进 TCO。</p>
+</blockquote>
+<h3 id="h30">⑥ 可证伪预测</h3>
+<ol>
+<li><strong>若设备数 &gt; 50 万且不做降采样</strong>，跨设备时间范围聚合查询的 P95 会超过 5s，必须引入预聚合表或集群。</li>
+<li><strong>若把 <code>deviceId</code> 设计成 InfluxDB 的 tag</strong>，10 万设备规模下内存会 OOM——这是选型对比中可直接实验验证的差异。</li>
+<li><strong>若子表不做归档删除</strong>，3 年后元数据量会让 <code>SHOW STABLES</code> 类操作显著变慢。</li>
+</ol>
+<h3 id="h31">⑦ 验证方法</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>验证</th>
+<th>工具</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>写入吞吐</td>
+<td><code>taosBenchmark</code>（官方）</td>
+<td>达到目标行/秒时 P99 写入延迟 &lt; 50ms</td>
+</tr>
+<tr>
+<td>聚合查询</td>
+<td>构造 10 万子表 × 1 年数据</td>
+<td>常用聚合 P95 &lt; 1s</td>
+</tr>
+<tr>
+<td>压缩比实测</td>
+<td>真实报文数据集</td>
+<td>压缩比 ≥ 8×</td>
+</tr>
+<tr>
+<td>高基数对比</td>
+<td>同数据集灌 InfluxDB 对比内存</td>
+<td>形成对比报告（选型证据）</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h32">⑧ 决策与代价</h3>
+<p><strong>决策</strong>：TDengine（3 副本 vgroup），MySQL 仅存业务元数据，Redis 缓存，MongoDB 存原始报文，华为 OBS 存图片视频。</p>
+<p><strong>代价</strong>
+| 代价 | 说明 |
+|---|---|
+| <strong>AGPL 商业授权费</strong> | 闭源交付必买，<code>⚠️待询价</code>，必须进 TCO |
+| 团队学习成本 | TDengine SQL 有方言（超级表/子表/连续查询），约 1–2 人周 |
+| 生态较小 | Grafana 数据源有，但社区插件不如 InfluxDB 丰富 |
+| 运维多一个组件 | 但单机形态简单，集群形态才复杂 |</p>
+<hr />
+<h2 id="h33">D4 · 安全与合规基线</h2>
+<h3 id="h34">① 原始约束</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>约束</th>
+<th>事实</th>
+<th>影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>等保</td>
+<td>To G 项目普遍要求 <strong>等保 2.0 三级</strong>（<code>GB/T 22239-2019</code>）</td>
+<td>二三十项控制要求，逐条要有落点</td>
+</tr>
+<tr>
+<td>密评</td>
+<td>政务/金融类常要求通过<strong>商用密码应用安全性评估</strong>（<code>GB/T 39786-2021</code>）</td>
+<td>国密算法为强制项</td>
+</tr>
+<tr>
+<td>国密算法</td>
+<td><code>GM/T 0002</code>(SM4) / <code>GM/T 0003</code>(SM2) / <code>GM/T 0004</code>(SM3)</td>
+<td>需设备端支持</td>
+</tr>
+<tr>
+<td>设备算力</td>
+<td>MCU 有限，部分无国密硬件加速</td>
+<td>SM4 软实现性能可能不足</td>
+</tr>
+<tr>
+<td>固件安全</td>
+<td>设备可被物理接触</td>
+<td><strong>无签名固件 = 一票否决</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h35">② 设备鉴权三方案对比</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>方案</th>
+<th>安全性</th>
+<th>设备成本</th>
+<th>运维成本</th>
+<th>适用规模</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>一机一密 + HMAC-SM3</strong></td>
+<td>中</td>
+<td>低（预置密钥）</td>
+<td>低</td>
+<td>≤1 万设备，起步方案</td>
+</tr>
+<tr>
+<td><strong>X.509 国密证书 + 私有 CA</strong></td>
+<td>高</td>
+<td>中（证书存储/轮换）</td>
+<td>中（CA 运维）</td>
+<td>&gt;1 万或客户强制要求</td>
+</tr>
+<tr>
+<td><strong>PSK + DTLS</strong></td>
+<td>中</td>
+<td>低</td>
+<td>低</td>
+<td>NB-IoT/CoAP 低功耗场景</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>决策</strong>：分层——起步一机一密 + HMAC-SM3；规模或合规要求提升后升级国密证书 + 自建私有 CA。<strong>架构上从第一天就预留证书通道</strong>（否则后期改造极痛）。</p>
+<h3 id="h36">③ 等保三级控制项落点（框架级，具体条款号 <code>⚠️待查证</code>）</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>控制项</th>
+<th>要求</th>
+<th>本方案落点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>身份鉴别</td>
+<td>双因素、复杂度、登录失败处理</td>
+<td>设备：证书/一机一密；平台账号：MFA</td>
+</tr>
+<tr>
+<td>访问控制</td>
+<td>最小权限、权限分离</td>
+<td>RBAC + 数据权限（行/列级）</td>
+</tr>
+<tr>
+<td>安全审计</td>
+<td>审计记录、防删改、留存 ≥6 个月</td>
+<td>审计日志<strong>独立库 + 只追加 + 独立账号</strong></td>
+</tr>
+<tr>
+<td>入侵防范</td>
+<td>最小服务、漏洞管理</td>
+<td>端口最小化 + 镜像扫描（Trivy）</td>
+</tr>
+<tr>
+<td><strong>数据完整性</strong></td>
+<td>校验机制</td>
+<td>SM3 摘要 + 传输/存储校验</td>
+</tr>
+<tr>
+<td><strong>数据保密性</strong></td>
+<td>传输与存储加密</td>
+<td>TLS（国密套件）/DTLS + SM4 字段加密</td>
+</tr>
+<tr>
+<td>数据备份恢复</td>
+<td>定期备份、异地</td>
+<td>每日全备 + binlog 异地</td>
+</tr>
+<tr>
+<td>剩余信息保护</td>
+<td>释放前清除</td>
+<td>磁盘擦除流程 + 密钥销毁</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h37">③-补 IEC 62443 分区与 OT/IT 边界</h3>
+<p>等保 2.0 是<strong>国内 To G 的合规底线</strong>，但工业客户（尤其有出口业务、外资产线或大型制造集团）会额外要求 <strong>IEC 62443</strong>。两者不是替代关系，落点也不同：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>要求</th>
+<th>落点</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Zones &amp; Conduits 分区分管道</strong></td>
+<td>按 ISA-95 分层划区：现场控制区 / 产线区 / 站点区 / 企业级</td>
+<td>同区自由通信，跨区只走预定义 conduit，默认拒绝</td>
+</tr>
+<tr>
+<td><strong>工业 DMZ</strong></td>
+<td>broker、 historians、补丁/反病毒分发放在 DMZ</td>
+<td><strong>IT 侧任何主机不得直达 OT 网</strong>，双向都不直连</td>
+</tr>
+<tr>
+<td><strong>数据二极管 / 单向网关</strong></td>
+<td>只允许遥测从 OT 流向 IT</td>
+<td>控制指令回写必须经多因素人工认证 + 独立审批通道（见 D5 OTA）</td>
+</tr>
+<tr>
+<td><strong>OT 感知 IDS</strong></td>
+<td>与 IT IDS 并行部署，旁路镜像</td>
+<td>识别异常 PLC 读写、非计划下载、扫描行为；不能只靠 IT 侧防火墙</td>
+</tr>
+<tr>
+<td><strong>固件来源与补丁纪律</strong></td>
+<td>验签 + 供应商来源核验 + 长生命周期资产的补丁台账</td>
+<td>对应 D4 的"无签名固件一票否决"</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>与 D4 等保控制项的映射</strong>：等保管"身份鉴别/访问控制/审计/数据完整性保密性"，IEC 62443 管"网络分段/边界/供应链/事件响应"。两者叠加时，<strong>审计日志独立库 + 只追加</strong>（D4 已有）同时满足两边，是复用点；而 DMZ 与数据二极管是等保里没有明确要求、但工业项目会查的增量项，必须提前进预算和排期。</p>
+<blockquote>
+<p>待查证：目标客户是否把 IEC 62443 写进合同。若写进，测评与分区改造的成本需单列（约数周实施 + 第三方评估），不能藏在"等保 8–15 万"里。</p>
+</blockquote>
+<figure id="fig6"><img src="assets/aiot-fig6.png" alt="证书有效期策略对比" loading="lazy"><figcaption>图 6　证书有效期策略对比：统一到期 vs 错峰加重叠期</figcaption></figure>
+<h3 id="h38">④ FMEA（安全侧）</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>失效模式</th>
+<th>影响</th>
+<th>S</th>
+<th>O</th>
+<th>D</th>
+<th>RPN</th>
+<th>措施</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>证书统一有效期、无轮换宽限</strong></td>
+<td><strong>到期日全量设备同时掉线</strong></td>
+<td>10</td>
+<td>7</td>
+<td>3</td>
+<td><strong>210</strong></td>
+<td><strong>有效期错峰 + 提前 90 天告警 + 双证书重叠期</strong></td>
+</tr>
+<tr>
+<td>密钥硬编码在固件</td>
+<td>提取一台即伪造整批</td>
+<td>9</td>
+<td>6</td>
+<td>6</td>
+<td><strong>324</strong></td>
+<td>一机一密出厂注入 + 安全元件（若成本允许）</td>
+</tr>
+<tr>
+<td>固件无签名</td>
+<td>可刷恶意固件</td>
+<td>10</td>
+<td>5</td>
+<td>4</td>
+<td>200</td>
+<td><strong>SM2 签名 + 设备验签，验签失败拒刷</strong></td>
+</tr>
+<tr>
+<td>审计日志与业务同库同账号</td>
+<td>不合规、可被删</td>
+<td>8</td>
+<td>6</td>
+<td>5</td>
+<td>240</td>
+<td>独立库 + 只追加 + 独立账号</td>
+</tr>
+<tr>
+<td>租户越权（漏写 tenant 条件）</td>
+<td>数据泄露</td>
+<td>9</td>
+<td>5</td>
+<td>6</td>
+<td>270</td>
+<td>MyBatis 拦截器强制注入 + 越权专项测试</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>必须画出来的那个坑</strong>：证书有效期统一设 1 年、<code>expireAt</code> 取创建时间 +365 天 → <strong>第 365 天全量设备同时掉线</strong>。做过 IoT 的都踩过。解法是<strong>错峰 + 重叠期 + 提前告警</strong>，且这套机制<strong>必须从第一天设计，后补极痛</strong>。</p>
+</blockquote>
+<h3 id="h39">⑤ 可证伪预测</h3>
+<ol>
+<li><strong>若证书有效期统一为 1 年且无重叠期</strong>，第 365 天会出现全量设备同时认证失败，恢复需人工逐台换证。</li>
+<li><strong>若一机一密密钥硬编码在固件中</strong>，提取任意一台设备即可伪造整批设备身份。</li>
+<li><strong>若审计日志与业务共库共账号</strong>，等保测评该项必不通过。</li>
+</ol>
+<h3 id="h40">⑥ 验证方法</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>验证</th>
+<th>出具方</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>等保测评报告</td>
+<td>第三方测评机构</td>
+<td><strong>法定要求，非自评</strong></td>
+</tr>
+<tr>
+<td>商用密码应用安全性评估（密评）</td>
+<td>第三方机构</td>
+<td>国密落地证明</td>
+</tr>
+<tr>
+<td>渗透测试</td>
+<td>第三方红队</td>
+<td>含固件提取测试</td>
+</tr>
+<tr>
+<td>越权测试</td>
+<td>内部专项</td>
+<td>拦截器绕过尝试 0 例通过</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h41">⑦ 决策与代价</h3>
+<p><strong>代价</strong>
+| 代价 | 量化 |
+|---|---|
+| 设备端国密库选型验证 | 2–4 人周（部分 MCU 无硬件加速，SM4 软实现性能需实测） |
+| 自建私有 CA | ≈ 2 人周 + 长期 0.1 人力运维 |
+| 证书轮换机制 | 必须前置设计，约 1 人周 |
+| 等保测评 | 8–15 万元 + 1–3 个月周期 |
+| 密评 | <code>⚠️待询价</code>，约数万元 |</p>
+<blockquote>
+<p><strong>这一节的价值不在于"我懂国密"，而在于我知道这些钱和时间必须提前进预算和排期，否则项目会在验收前两个月崩盘。</strong></p>
+</blockquote>
+<hr />
+<h2 id="h42">D5 · OTA 与远程运维</h2>
+<h3 id="h43">① 原始约束</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>约束</th>
+<th>事实</th>
+<th>影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>上门成本</td>
+<td>野外/客户现场 200–500 元/台次</td>
+<td>变砖 = 直接经济损失 + 信任崩塌</td>
+</tr>
+<tr>
+<td>弱网</td>
+<td>下载可能中断</td>
+<td>必须断点续传</td>
+</tr>
+<tr>
+<td>设备存储</td>
+<td>A/B 双分区需双倍 flash</td>
+<td>硬件选型约束</td>
+</tr>
+<tr>
+<td>电量</td>
+<td>升级中掉电 = 变砖</td>
+<td><strong>升级前置条件检查是刚需</strong></td>
+</tr>
+<tr>
+<td>合规</td>
+<td>固件须签名（联动 D4）</td>
+<td>验签不过拒刷</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h44">② 方案对比</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>方案</th>
+<th>回滚能力</th>
+<th>Flash 成本</th>
+<th>复杂度</th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单分区覆盖</td>
+<td>❌ 无</td>
+<td>1×</td>
+<td>低</td>
+<td>❌ 变砖高风险</td>
+</tr>
+<tr>
+<td><strong>A/B 双分区</strong></td>
+<td>✅ 秒级切换</td>
+<td>2×</td>
+<td>中</td>
+<td>✅ 新硬件首选</td>
+</tr>
+<tr>
+<td>Bootloader + 备份区</td>
+<td>✅ 可回滚</td>
+<td>1.5×</td>
+<td>中高</td>
+<td>✅ 存量设备折中</td>
+</tr>
+<tr>
+<td>差分升级</td>
+<td>✅（依托 A/B）</td>
+<td>低流量</td>
+<td>高（需工具链）</td>
+<td>⚠️ 大固件/极弱网时再上</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>决策</strong>：新硬件锁 A/B 双分区；存量设备用 Bootloader + 备份区；差分升级作为二期优化。</p>
+<h3 id="h45">③ 完整链路设计</h3>
+<pre><code>云端：固件签名(SM2) → 版本库 → 灰度策略(1%→观察24h→10%→全量)
+   ↓ MQTT 下发&quot;有新版&quot;通知（轻量，不走固件本体）
+边缘/设备：前置检查(电量&gt;阈值 + 信号&gt;阈值 + 空间足够) 
+   ↓ 不满足 → 上报&quot;延后&quot;，等条件满足
+下载：HTTP Range 断点续传（分片，支持弱网续传）
+   ↓
+验签：SM2 验签，失败 → 拒刷 + 上报原因
+   ↓
+刷写：A/B 分区写非活动分区 → 置启动标志 → 重启
+   ↓
+自检：新固件启动自检失败 → bootloader 自动回退旧分区
+   ↓
+上报：成功/失败（分类原因：电量不足/空间不足/验签失败/下载失败/启动失败）
+   ↓
+云端：失败率 &gt; 阈值 → 自动暂停灰度
+</code></pre>
+<figure id="fig7"><img src="assets/aiot-fig7.png" alt="固件升级链路" loading="lazy"><figcaption>图 7　固件升级完整链路：签名、灰度、前置检查、A/B 回滚</figcaption></figure>
+<p><strong>三个必须有的工程细节</strong>
+1. <strong>升级前置检查</strong>：电量、信号、空间——不满足则延后。没有这个，弱电设备升级必变砖。
+2. <strong>MQTT 只发通知，固件走 HTTP</strong>：固件动辄数百 KB~MB，走 MQTT 会堵住消息通道。
+3. <strong>失败原因分类上报</strong>：否则现场只能"上门看一眼"，OTA 的省人力价值归零。</p>
+<h3 id="h46">④ FMEA</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>失效模式</th>
+<th>影响</th>
+<th>S</th>
+<th>O</th>
+<th>D</th>
+<th>RPN</th>
+<th>措施</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>升级中掉电</td>
+<td>变砖</td>
+<td>10</td>
+<td>5</td>
+<td>3</td>
+<td>150</td>
+<td>A/B 或 bootloader 回退 + 电量前置检查</td>
+</tr>
+<tr>
+<td>全量同时推送</td>
+<td>存储/带宽打爆 + 坏固件全扩散</td>
+<td>9</td>
+<td>6</td>
+<td>3</td>
+<td>162</td>
+<td><strong>灰度 1%→10%→全量</strong></td>
+</tr>
+<tr>
+<td>无回滚机制</td>
+<td>一次坏固件毁全部现场</td>
+<td>10</td>
+<td>4</td>
+<td>3</td>
+<td>120</td>
+<td>A/B 分区</td>
+</tr>
+<tr>
+<td>验签失败不报原因</td>
+<td>无法定位，只能上门</td>
+<td>6</td>
+<td>7</td>
+<td>5</td>
+<td>210</td>
+<td>分类上报</td>
+</tr>
+<tr>
+<td>弱网下载中断无续传</td>
+<td>反复重下、耗流量、失败率高</td>
+<td>7</td>
+<td>7</td>
+<td>3</td>
+<td>147</td>
+<td>HTTP Range 断点续传</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h47">⑤ 可证伪预测</h3>
+<ol>
+<li><strong>若无电量前置检查</strong>，野外低电量设备升级变砖率会显著高于 0（可通过模拟低压验证）。</li>
+<li><strong>若不做灰度直接全量</strong>，一个坏固件会在<strong>一轮推送周期内覆盖全部设备</strong>，且无法回滚（无 A/B 时）。</li>
+<li><strong>若固件走 MQTT 分发</strong>，一次全量推送会挤占消息通道，导致业务数据延迟显著上升。</li>
+</ol>
+<h3 id="h48">⑥ 验证方法</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>验证</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>断电恢复</td>
+<td>升级过程中随机断电 20 次</td>
+<td>100% 可恢复（A/B 回退或续传）</td>
+</tr>
+<tr>
+<td>灰度回滚</td>
+<td>故意推送坏固件到 1% 灰度组</td>
+<td>失败率触发自动暂停，回滚成功</td>
+</tr>
+<tr>
+<td>弱网下载</td>
+<td>netem 限速 50KB/s + 10% 丢包</td>
+<td>断点续传成功率 100%</td>
+</tr>
+<tr>
+<td>验签失败</td>
+<td>推送未签名固件</td>
+<td>拒绝刷写 + 上报正确原因码</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h49">⑦ 决策与代价</h3>
+<p><strong>代价</strong>
+| 代价 | 说明 |
+|---|---|
+| <strong>A/B 需双倍 flash</strong> | 新硬件选型必须锁定，<strong>存量设备无法享受</strong>（只能走 bootloader 折中） |
+| 灰度控制服务 | ≈ 2 人周 |
+| 差分升级工具链 | ≈ 2–3 人周（二期） |
+| 远程运维通道 | 日志拉取/远程指令需限流，≈ 1 人周 |</p>
+<hr />
+<h2 id="h50">D6 · 落地失败模式与数据成熟度</h2>
+<p>前五个决策都在回答"技术上怎么做对"。这一节回答一个更可能让项目死掉的问题：<strong>为什么技术做对了，项目还是会失败。</strong></p>
+<h3 id="h51">① 先认清失败率，别拿个案当基准</h3>
+<p>行业复盘（2024–2026 多份调查）给出的区间是：<strong>试点到生产的失败率 70%–85%</strong>；BCG 2024 报告约 74% 的企业无法规模化兑现价值，McKinsey 制造业 AI "显著 EBIT 影响" 长期停在个位数百分比。</p>
+<p><strong>但根因不是模型质量。</strong> 跨项目复盘高度一致地指向数据：缺事件标签、数据源碎片、无 schema 契约、无漂移监控。现代模型已经商品化，"用基础模型跳过数据工作"这条 2024–25 年的口号，到 2026 年基本被撤回——基础模型能降低标注的边际成本，<strong>不会凭空制造 ground truth，也不会修传感器漂移</strong>。</p>
+<h3 id="h52">② 一线访谈里的四大障碍（新华网 2026-10-27，卡奥斯陈录城）</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>障碍</th>
+<th>具体表现</th>
+<th>本方案的应对</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>隐性经验难沉淀</td>
+<td>高价值知识在老师傅脑子里，没标准化、没数字化</td>
+<td>先做客观验收场景（PdM/质检），别一上来啃工艺诀窍</td>
+</tr>
+<tr>
+<td>数据质量参差</td>
+<td>采集、标注、治理难；数据碎片化 → "能说不能做"</td>
+<td>D6 ③ 数据成熟度门槛；D2 原始报文留档可回放</td>
+</tr>
+<tr>
+<td>业务流程未重塑</td>
+<td>AI 外挂，业务和 AI 两张皮</td>
+<td>预测必须自动生成工单并闭环，看板不算交付</td>
+</tr>
+<tr>
+<td>单点易、规模化难</td>
+<td>试点漂亮，复制不动</td>
+<td>语义桥接层（OPC UA/UNS）+ 配置化多租户，是新站点复用的载体</td>
+</tr>
+</tbody>
+</table></div>
+<p>同一篇访谈给出的路径与本文一致：<strong>标杆场景先跑通单一场景的完整商业闭环，验证 ROI 后再复制，把适配成本摊薄。</strong></p>
+<h3 id="h53">③ 数据成熟度 L0–L4：开工前先诚实评级</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>级别</th>
+<th>特征</th>
+<th>能不能上预测模型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L0</td>
+<td>纸质单据 / 零散 Excel，无采集</td>
+<td>❌ 先做感知层</td>
+</tr>
+<tr>
+<td>L1</td>
+<td>能集中采集，但无实时分析</td>
+<td>❌ 先做可视化与阈值告警</td>
+</tr>
+<tr>
+<td>L2</td>
+<td>有结构化历史数据 + 事件标签 + schema 契约</td>
+<td>✅ 可以开始，且必须配监控</td>
+</tr>
+<tr>
+<td>L3</td>
+<td>有标注闭环与漂移监控，可定期重训</td>
+<td>✅ 可扩规模</td>
+</tr>
+<tr>
+<td>L4</td>
+<td>跨站点数据联邦与统一本体</td>
+<td>✅ 可做企业级优化</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>最常犯的错是自我高估一级。</strong> 开工前拉着业务、IT、OT 三方把目标资产在 L0–L4 上"念出声"评一遍，按<strong>实际</strong>级别排期，不是按期望级别。另外：<strong>联邦学习/边缘 ML 解决不了数据成熟度</strong>——跑在 L0 数据上的联邦管道只会产出"联邦垃圾"，先到 L2 再谈拓扑。</p>
+<h3 id="h54">④ ROI 窗口错配：比技术更常杀死项目</h3>
+<p>这是最容易被忽略的结构性矛盾：<strong>预测性维护模型要证明"避免了一次故障"，需要至少 18 个月的故障后数据（若设备 MTBF 为 6 个月）；而试点预算通常只有 6–12 个月。</strong> 结果就是——模型还没来得及证明价值，预算先结束了。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>做法</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用<strong>可控对照 cohort</strong> 而不是全量前后对比</td>
+<td>否则无法排除产线波动，ROI 说不清</td>
+</tr>
+<tr>
+<td>同时申报多个指标</td>
+<td>MTBF / MTTR / OEE / 单件能耗，短周期指标（能耗、OEE）先出数，长周期指标（避免故障）慢慢攒</td>
+</tr>
+<tr>
+<td>把"数据骨架"的成本摊到 5–10 个用例的组合上</td>
+<td>单个用例背整条数据管道必然显得贵；但<strong>若业务方说不出 5 个用例，说明骨架投资为时过早</strong>（"平台先行"的批评是真实的）</td>
+</tr>
+<tr>
+<td>合同阶段就谈清验收窗口</td>
+<td>18 个月的验证期要写进商务条款，不能等交付时才发现对不上</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h55">⑤ 组织：OT 侧必须书面指定 owner</h3>
+<p>单一最常见的规模化失败原因不是技术，是<strong>交接</strong>：OT 团队 / SI 供应商 / 控制工程方从未书面同意接手生产部署。<strong>没有具名 owner，就没有项目</strong>——无论模型多好。开工第一天就要落纸。</p>
+<h3 id="h56">⑥ 成熟度标尺 L1–L5（用来对齐客户预期，别越级承诺）</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>级别</th>
+<th>能力</th>
+<th>2026 年真实分布</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1 Connected</td>
+<td>数据集中，无实时分析</td>
+<td>大多数从这里起步</td>
+</tr>
+<tr>
+<td>L2 Observable</td>
+<td>有看板，但仍是事后响应</td>
+<td>常见</td>
+</tr>
+<tr>
+<td>L3 Predictive</td>
+<td>提前数天预测故障，并自动排维修</td>
+<td>可交付、ROI 最清晰</td>
+</tr>
+<tr>
+<td>L4 Adaptive</td>
+<td>按实时工况自动调参</td>
+<td>少数</td>
+</tr>
+<tr>
+<td>L5 Semi-Autonomous</td>
+<td>整线在护栏内自优化，异常才升级人工</td>
+<td><strong>行业极少达到，不做承诺</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="h57">⑦ 商业模式（对中小制造尤其关键）</h3>
+<p>传统工业软件一次性买断正在被替代：主流转向 <strong>SaaS 年费订阅</strong>，并试点<strong>按工单 / Token 调用 / 增量收益分成</strong>的弹性付费，把 CAPEX 转成 OPEX，适配中小企业波动的订单与现金流。行业参考：单场景试点 10–30 万元，全厂级平台 50–200 万元，投资回收点通常 1–2 年；非计划停机降 35%–50%、维护成本降 25%–30%、提前 72h 预警（<strong>以上为行业区间，不是对客户的承诺值</strong>）。</p>
+<hr />
+<h2 id="h58">六、TCO 与交付人天（三档规模）</h2>
+<blockquote>
+<p>假设：私有化部署为主、单机房、无专职运维、边缘复用客户工控机（新购另计）</p>
+</blockquote>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>1 千设备</th>
+<th>1 万设备</th>
+<th>10 万设备</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>应用服务器</td>
+<td>4C8G × 3</td>
+<td>8C16G × 6</td>
+<td>16C32G × 10</td>
+</tr>
+<tr>
+<td>存储</td>
+<td>2TB × 1</td>
+<td>4TB × 2</td>
+<td>20TB（含降采样）</td>
+</tr>
+<tr>
+<td>边缘网关</td>
+<td>20–50 台</td>
+<td>200–500 台</td>
+<td>2,000+ 台</td>
+</tr>
+<tr>
+<td>视觉边缘盒</td>
+<td>按需</td>
+<td>按需</td>
+<td>按需</td>
+</tr>
+<tr>
+<td><strong>TDengine 商业授权</strong></td>
+<td><code>⚠️待询价</code></td>
+<td><code>⚠️待询价</code></td>
+<td><code>⚠️待询价</code></td>
+</tr>
+<tr>
+<td>等保测评</td>
+<td>8–15 万（一次性）</td>
+<td>同</td>
+<td>同</td>
+</tr>
+<tr>
+<td>密评</td>
+<td><code>⚠️待询价</code></td>
+<td>同</td>
+<td>同</td>
+</tr>
+<tr>
+<td><strong>研发人力</strong></td>
+<td><strong>3 人 × 4 月</strong></td>
+<td><strong>4 人 × 6 月</strong></td>
+<td><strong>5 人 × 9 月</strong></td>
+</tr>
+<tr>
+<td>交付实施</td>
+<td>3–5 人天/站点</td>
+<td>3–5 人天/站点</td>
+<td>同</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>关键结论</strong>：
+- <strong>千设备级</strong>：一台 4C8G 服务器 + 单机 TDengine 就够，架构可以极简
+- <strong>万设备级</strong>：瓶颈在<strong>边缘覆盖与交付人力</strong>，不在云端算力
+- <strong>十万设备级</strong>：才需要考虑 TDengine 集群、接入层水平扩展、Flink 级流处理</p>
+<blockquote>
+<p><strong>一句话结论</strong>：这个规模的瓶颈从来不是云端消息和存储，是<strong>边缘覆盖率和交付效率</strong>。钱和人应该砸在边缘与交付工具（D1/D5）上，不是砸在中间件上。</p>
+</blockquote>
+<p><strong>ROI 参考区间（行业口径，非承诺值，详见 D6）</strong>：单场景试点 10–30 万元，全厂级 50–200 万元，投资回收 1–2 年；预测性维护可带来非计划停机降 35%–50%、维护成本降 25%–30%。报价时的正确姿势是<strong>先锁定一个可对照的单一场景和验证窗口（≥18 个月）</strong>，再谈平台价格——否则会掉进 D6 ④ 的预算错配陷阱。</p>
+<hr />
+<h2 id="h59">七、Walking Skeleton（2 周，先证伪再投入）</h2>
+<p><strong>目标</strong>：用最窄链路证伪"架构假设"，避免 3 个月后才发现选错。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>时间</th>
+<th>做什么</th>
+<th>验证什么假设</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>第 1 周 D1–D3</td>
+<td>1 台真实 RS485 电表 → 边缘网关（Modbus 驱动）→ MQTT → EMQX → 消费程序 → TDengine → Grafana 一条曲线</td>
+<td>南向解析可行？端到端延迟实际多少？TDengine 写入是否如预期？</td>
+</tr>
+<tr>
+<td>第 1 周 D4–D5</td>
+<td>拔网线 2h → 恢复，观察补传</td>
+<td>断网续传是否真的成立？回灌会不会打爆？</td>
+</tr>
+<tr>
+<td>第 2 周 D1–D2</td>
+<td>注入重复/乱序数据 → 验证去重</td>
+<td>去重键是否够用？时钟问题是否出现？</td>
+</tr>
+<tr>
+<td>第 2 周 D3–D4</td>
+<td>一条阈值告警端到端跑通</td>
+<td>告警延迟是否满足 P95&lt;5s？</td>
+</tr>
+<tr>
+<td>第 2 周 D5</td>
+<td>推送一个坏固件 → 验证回滚</td>
+<td>A/B 或 bootloader 回退是否真的可用？</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>产出</strong>：一个可演示的 Demo + 一份"假设验证报告"（哪些成立、哪些被推翻、代价如何调整）。</p>
+<blockquote>
+<p><strong>这是"深"的最终形态</strong>：不是承诺架构正确，而是<strong>用两周最低成本把它证伪一遍</strong>。</p>
+</blockquote>
+<hr />
+<figure id="fig8"><img src="assets/aiot-fig8.png" alt="实施路线" loading="lazy"><figcaption>图 8　实施路线：先证伪，再投入</figcaption></figure>
+<h2 id="h60">八、SLO / SLI 与错误预算</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>SLI（指标）</th>
+<th>SLO（目标）</th>
+<th>度量方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>设备在线率</td>
+<td>≥ 99%（月度）</td>
+<td>心跳超时判定 / 总设备数</td>
+</tr>
+<tr>
+<td>数据完整率</td>
+<td>≥ 99.9%（月度）</td>
+<td>入库唯一数 / 设备上报应到数</td>
+</tr>
+<tr>
+<td>告警端到端延迟</td>
+<td>P95 &lt; 5s</td>
+<td>事件产生 → 告警落地时间戳差</td>
+</tr>
+<tr>
+<td>接入层可用性</td>
+<td>99.9%（月停机 &lt; 43min）</td>
+<td>接入层探针</td>
+</tr>
+<tr>
+<td>API 延迟</td>
+<td>P99 &lt; 200ms</td>
+<td>网关埋点</td>
+</tr>
+<tr>
+<td>OTA 成功率</td>
+<td>≥ 99%</td>
+<td>成功数 / 下发数</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>错误预算规则</strong>：99.9% → 每月 43 分钟预算。预算耗尽即<strong>冻结非紧急发布</strong>，优先修稳定性。这条规则把"要不要发版"从政治问题变成数学问题。</p>
+<hr />
+<h2 id="h61">九、「我们不做」清单（架构判断力的体现）</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>不做</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>❌ 7×24 视频全量上云</td>
+<td>带宽成本杀死项目，改事件化</td>
+</tr>
+<tr>
+<td>❌ 双活数据中心</td>
+<td>3–5 人团队养不起，改单机房 + 异地备份</td>
+</tr>
+<tr>
+<td>❌ 自研 MQTT Broker</td>
+<td>EMQX 已是事实标准，自研是纯浪费</td>
+</tr>
+<tr>
+<td>❌ 端到端 exactly-once</td>
+<td>物理上不存在，改 at-least-once + 去重</td>
+</tr>
+<tr>
+<td>❌ Flink / 流批一体</td>
+<td>当前量级不匹配，TDengine 连续查询足够</td>
+</tr>
+<tr>
+<td>❌ 全量微服务</td>
+<td>3–5 人维护不了</td>
+</tr>
+<tr>
+<td>❌ 为每个客户 fork 代码</td>
+<td>改配置化 + 多租户，否则维护地狱</td>
+</tr>
+<tr>
+<td>❌ 单分区覆盖式 OTA</td>
+<td>变砖风险不可接受</td>
+</tr>
+<tr>
+<td>❌ 一元标签的时序建模</td>
+<td>高基数会 OOM</td>
+</tr>
+<tr>
+<td>❌ 让 LLM 进入 OT 控制回路</td>
+<td>边缘决策必须是确定性策略 DAG + 符号模型校验；LLM 只做摘要与"没见过的新失效模式"推理。幻觉在物理世界是安全事故</td>
+</tr>
+<tr>
+<td>❌ 在业务方说不出 5 个用例前就先建"数据中台/平台"</td>
+<td>"平台先行"有昂贵而闲置的历史记录；骨架要对着真实用例组合建（D6 ④）</td>
+</tr>
+<tr>
+<td>❌ 用全量前后对比证明 ROI</td>
+<td>产线波动会淹没效果，必须用可控对照 cohort（D6 ④）</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="h62">十、待查证清单（汇总，共 14 条）</h2>
+<p><strong>协议与标准</strong></p>
+<ol>
+<li><code>TDengine 3.x</code> 对同子表同时间戳重复写入的行为（覆盖/保留/报错）</li>
+<li>TDengine 乱序写入的容忍参数名与默认值</li>
+<li>MQTT 5.0 <code>Session Expiry Interval</code> 与 EMQX 持久化会话的组合语义</li>
+<li><code>GB/T 22239-2019</code> 等保三级中"数据完整性/保密性"对应的<strong>具体条款编号</strong></li>
+</ol>
+<p><strong>产品与实现</strong></p>
+<ol start="5">
+<li>EMQX bridge 到 RabbitMQ/Kafka 的失败重试语义、buffer 配置项、是否支持 DLQ</li>
+<li>RabbitMQ Quorum Queue 3 节点下的写入确认语义（raft 多数派？少数派可写？）</li>
+<li>TDengine 社区版 AGPL 在闭源私有化交付下的<strong>商业授权边界与价格</strong></li>
+</ol>
+<p><strong>商务与现场</strong></p>
+<ol start="8">
+<li>客户设备清单真实协议分布（决定 D1 南向驱动优先级）</li>
+<li>华为 Atlas/IEF 的授权与商务关系（决定 D1 视觉选型）</li>
+<li>等保目标级别（二级/三级）与是否强制密评（决定 D4 投入时点）</li>
+</ol>
+<p><strong>前沿评审补充项</strong></p>
+<ol start="11">
+<li>客户是否把 <strong>IEC 62443</strong> 写进合同、是否需要工业 DMZ 与数据二极管（D4 ③-补）</li>
+<li>客户设备清单的<strong>真实协议占比</strong>（OPC UA / Modbus / 私有 PLC 各多少），决定语义桥接层能否裁掉（D1 ③-补）</li>
+<li><strong>OT 侧生产部署的具名 owner 是谁</strong>（书面），无 owner 不启动规模化（D6 ⑤）</li>
+<li><strong>ROI 验证窗口与对照 cohort 的商务约定</strong>：能否接受 ≥18 个月的验证期（D6 ④）</li>
+</ol>
+<hr />
+  </main>
+</div>
+
+<div class="lb" id="lb"><img src="" alt=""></div>
+<script>
+(function(){
+  var lb=document.getElementById('lb'),lbi=lb.querySelector('img');
+  document.querySelectorAll('figure img').forEach(function(im){
+    im.addEventListener('click',function(){lbi.src=im.src;lb.classList.add('on');});
+  });
+  lb.addEventListener('click',function(){lb.classList.remove('on');lbi.src='';});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'){lb.classList.remove('on');lbi.src='';}});
+
+  var links=[].slice.call(document.querySelectorAll('.side a[href^="#"]'));
+  var targets=links.map(function(a){return document.getElementById(a.getAttribute('href').slice(1));}).filter(Boolean);
+  function onScroll(){
+    var y=window.scrollY+110,cur=null;
+    targets.forEach(function(t){if(t.offsetTop<=y)cur=t;});
+    links.forEach(function(a){a.classList.remove('on');});
+    if(cur){var a=links.find(function(x){return x.getAttribute('href')==='#'+cur.id;});if(a)a.classList.add('on');}
+  }
+  window.addEventListener('scroll',onScroll,{passive:true});onScroll();
+})();
+</script>
+</body>
+</html>
