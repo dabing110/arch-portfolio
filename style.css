@@ -130,7 +130,7 @@ figcaption b{color:#5b6470;font-weight:600}
 .sec h2{font-size:26px;font-weight:700;letter-spacing:-.015em;margin-bottom:10px}
 .sec .lead{color:#5b6470;font-size:15.5px;max-width:720px;margin-bottom:34px}
 
-.cards{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:22px}
 .card{
   border:1px solid #e3e8ee;border-radius:10px;padding:28px 28px 26px;background:#fff;
   transition:border-color .2s,box-shadow .2s,transform .2s;display:flex;flex-direction:column;
